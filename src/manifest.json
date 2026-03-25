@@ -1,0 +1,83 @@
+{
+  "manifest_version": 3,
+  "name": "LiveDemo - AI Product demos in seconds",
+  "description": "Create AI interactive product demos and guides. Record, edit, and share clickable demos that convert prospects into customers.",
+  "options_page": "options.html",
+  "background": {
+    "service_worker": "background.bundle.js"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": "logo-128.png"
+  },
+  "permissions": [
+    "activeTab",
+    "tabs",
+    "storage",
+    "tabCapture",
+    "scripting",
+    "<all_urls>"
+  ],
+  "icons": {
+    "128": "logo-128.png"
+  },
+  "host_permissions": [
+    "<all_urls>",
+    "*://*/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "<all_urls>"
+      ],
+      "run_at": "document_start",
+      "js": [
+        "contentScript.bundle.js"
+      ],
+      "css": [
+        "content.styles.css"
+      ],
+      "match_origin_as_fallback": true,
+      "all_frames": true
+
+    }
+  ],
+  "externally_connectable": {
+    "matches": [
+      "*://localhost/*",
+      "*://localhost.mine/*",
+      "*://app.livedemo.ai/*",
+      "*://app-staging.livedemo.ai/*"
+    ]
+  },
+  "devtools_page": "devtools.html",
+  "commands": {
+    "capturePage": {
+      "suggested_key": {
+        "default": "Alt+S",
+        "mac": "Command+S",
+        "chromeos": "Alt+S",
+        "linux": "Alt+S"
+      },
+      "description": "Capture the current web page"
+    }
+  },
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "takeScreenshot.bundle.js",
+        "takeVideo.bundle.js",
+        "captureScript.bundle.js",
+        "injectScript.js",
+        "helperTab.html",
+        "topScript.bundle.js",
+        "autoRecordingHelpers.bundle.js",
+        "frameScript.bundle.js",
+        "content.styles.css", "icon-128.png", "icon-34.png", "logo-128.png", "logo-round.png"],
+      "matches": [
+        "*://*/*"
+
+      ]
+    }
+  ]
+}

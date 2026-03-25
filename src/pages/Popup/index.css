@@ -1,0 +1,14 @@
+body {
+  width: 350px;
+  height: 430px;
+  margin: 0;
+  font-family: monospace, cursive !important;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  position: relative;
+}
+
+code {
+  font-family: source-code-pro, Menlo, Monaco, Consolas, 'Courier New',
+    monospace;
+}
