@@ -1,5 +1,6 @@
 import short from 'short-uuid'
 import TagNames from '../../constants/TagNames'
+import { installRecordingTabCursor, removeRecordingTabCursor } from './recordingTabCursor.js'
 
 const MESSAGE_NAMES = {
   CheckContentScript: 'flix_checkContentScript',
@@ -14,7 +15,7 @@ const MESSAGE_NAMES = {
   RemoveEventListeners: 'ld-remove-event-listeners',
   FrameInfoReport: 'ld-frame-info-report',
   Click: 'ld-click-event',
-  Drag: 'ld-drag-event',
+  CursorMove: 'ld-cursor-move',
   Scroll: 'ld-scroll-event',
   KeyPress: 'ld-keypress-event',
   ScreenshotRequest: 'ld-screenshot-request',
@@ -197,11 +198,13 @@ function handleMessageFromExtensionClosure(flixVars) {
       console.log('Got message to add event listeners')
 
       flixVars.didReportFrameInfo = false
+      flixVars.cursorPositions = []
       addEventListeners(flixVars)
       sendResponse()
     } else if (message.name === MESSAGE_NAMES.RemoveEventListeners) {
 
       console.log('Got message to remove event listeners')
+      flixVars.cursorPositions = []
       removeEventListeners(flixVars)
       sendResponse()
     } else if (message.name === MESSAGE_NAMES.StartAIRecording) {
@@ -254,6 +257,7 @@ function detectMouseDownClosure(flixVars) {
 
     flixVars.mouseIsDown = true
     flixVars.isDragging = false
+    flixVars.cursorPositions = []
 
     let targetHTML = mouseDownEvent && mouseDownEvent.target && mouseDownEvent.target.outerHTML ? mouseDownEvent.target.outerHTML : ''
     let targetElementType = ''
@@ -296,21 +300,31 @@ function detectMouseMoveClosure(flixVars) {
 
   return function (mouseMoveEvent) {
 
-    if (flixVars.mouseIsDown) {
-      flixVars.isDragging = true
-
-      // console.log('Flix: dragging')
-      const message = {
-        name: MESSAGE_NAMES.Drag,
-        timeMs: Date.now(),
-      }
-
-      tryToSendMessageToExtension(message)
-    } else {
-
-      this.isDragging = false
+    if (!Array.isArray(flixVars.cursorPositions)) {
+      flixVars.cursorPositions = []
     }
 
+    const timeMs = Date.now()
+    const frameX = mouseMoveEvent.clientX
+    const frameY = mouseMoveEvent.clientY
+
+    const last = flixVars.cursorPositions[flixVars.cursorPositions.length - 1]
+    if (last && last.frameX === frameX && last.frameY === frameY) {
+      return
+    }
+
+    const point = { frameX, frameY, timeMs }
+
+    flixVars.cursorPositions.push(point)
+
+    const message = {
+      name: MESSAGE_NAMES.CursorMove,
+      frameX,
+      frameY,
+      timeMs,
+    }
+
+    tryToSendMessageToExtension(message)
   }
 }
 
@@ -358,9 +372,16 @@ function addEventListeners(flixVars) {
   flixVars.detectScrollHandler = detectScrollClosure(flixVars)
   flixVars.detectKeyPressHandler = detectKeyPressClosure(flixVars)
 
+  document.addEventListener('mousemove', flixVars.detectMouseMoveHandler, true)
+
+  chrome.storage.local.get(['type']).then(({ type }) => {
+    if (type === 'Video') {
+      installRecordingTabCursor(flixVars)
+    }
+  })
+
   document.addEventListener('click', flixVars.detectMouseDownHandler, true)
   // document.addEventListener('mousedown', flixVars.detectMouseDownHandler, true)
-  document.addEventListener('mousemove', flixVars.detectMouseMoveHandler, true)
   document.addEventListener('mouseup', flixVars.detectMouseUpHandler, true)
   document.addEventListener('scroll', flixVars.detectScrollHandler, true)
   document.addEventListener('keypress', flixVars.detectKeyPressHandler, true)
@@ -369,9 +390,11 @@ function addEventListeners(flixVars) {
 function removeEventListeners(flixVars) {
   console.log('Removing event listeners')
 
+  removeRecordingTabCursor(flixVars)
+
+  document.removeEventListener('mousemove', flixVars.detectMouseMoveHandler, true)
   document.removeEventListener('click', flixVars.detectMouseDownHandler, true)
   // document.removeEventListener('mousedown', flixVars.detectMouseDownHandler, true)
-  document.removeEventListener('mousemove', flixVars.detectMouseMoveHandler, true)
   document.removeEventListener('mouseup', flixVars.detectMouseUpHandler, true)
   document.removeEventListener('scroll', flixVars.detectScrollHandler, true)
   document.removeEventListener('keypress', flixVars.detectKeyPressHandler, true)

@@ -22,16 +22,16 @@ const Header = function (props) {
 
   useEffect(() => {
 
-    
-    
+
+
     if (!userWorkspaces) {
       setIsLoading(true)
 
       axios.get('/workspaces', {
-          headers: {
-            Authorization: `Bearer ${authDataState.token}`
-          }
-        })
+        headers: {
+          Authorization: `Bearer ${authDataState.token}`
+        }
+      })
         .then((res) => {
           let workspaces = res.data
 
@@ -44,6 +44,13 @@ const Header = function (props) {
 
           setIsLoading(false)
         })
+        .catch(e => {
+          console.log(e)
+          setIsLoading(false)
+          if (e.response?.status === 401) {
+            onLogout()  
+          }
+        })
     }
 
     if (userWorkspaces && !currentSelectedWorkspace) {
@@ -53,11 +60,18 @@ const Header = function (props) {
 
   }, [])
 
+  function onLogout() {
+    chrome.runtime.sendMessage({type: 'unauthenticate'})
+    setAuthData({})
+    navigate('/login')
+}
+
+
 
   return (
     <D.Wrapper>
       <D.LeftSide>
-        <D.Logo src={Logo}/>
+        <D.Logo src={Logo} />
         <D.LogoText>LiveDemo</D.LogoText>
       </D.LeftSide>
       <D.RightSide>
@@ -79,11 +93,11 @@ const Header = function (props) {
             width: 120
           }} onChange={(selectedWorkspaceId) => {
 
-          let selecedWorkspace = userWorkspaces.find(wk => wk._id === selectedWorkspaceId)
+            let selecedWorkspace = userWorkspaces.find(wk => wk._id === selectedWorkspaceId)
 
-          setCurrentSelectedWorkspace(selecedWorkspace)
+            setCurrentSelectedWorkspace(selecedWorkspace)
 
-        }}>
+          }}>
           {userWorkspaces && userWorkspaces.map((workspace) => {
             return <Option style={{
               background: 'none',

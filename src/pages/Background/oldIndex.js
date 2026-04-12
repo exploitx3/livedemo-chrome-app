@@ -47,6 +47,7 @@ var flixVarsGlobal = {
 
     demoTitle: '', //(await getCurrentTabInfo()).title
     capturedEvents: [],
+    cursorPositions: [],
     demoClickCount: 0,
     lastDemoEvent: undefined,
     aspectRatio: 1,
@@ -362,6 +363,10 @@ chrome.runtime.onMessage.addListener(function (msgObj, sendCommander, sendComman
     if (msgObj.type === 'ld-video-request') {
         let {storyId, workspaceId, authToken} = msgObj
         // console.log('flix_video_startRecording event')
+
+        if (sendCommander && sendCommander.tab && sendCommander.tab.id) {
+            flixVars.tabId = sendCommander.tab.id
+        }
 
         flixVars.IsAttached = true
         if (!flixVars.demoData) {

@@ -123,7 +123,8 @@ var flixVars = {
   frameInfo: {},
   enableLogging: true,
   mouseIsDown: false,
-  isDragging: false
+  isDragging: false,
+  cursorPositions: [],
 }
 
 window.flixVars = flixVars

@@ -47,6 +47,7 @@ var flixVarsGlobal = {
 
     demoTitle: '', //(await getCurrentTabInfo()).title
     capturedEvents: [],
+    cursorPositions: [],
     demoClickCount: 0,
     lastDemoEvent: undefined,
     aspectRatio: 1,
@@ -363,6 +364,10 @@ chrome.runtime.onMessage.addListener(function (msgObj, sendCommander, sendComman
         let {storyId, workspaceId, authToken} = msgObj
         // console.log('flix_video_startRecording event')
 
+        if (sendCommander && sendCommander.tab && sendCommander.tab.id) {
+            flixVars.tabId = sendCommander.tab.id
+        }
+
         flixVars.IsAttached = true
         if (!flixVars.demoData) {
             flixVars.demoData = {}
@@ -487,7 +492,7 @@ chrome.runtime.onMessage.addListener(function (msgObj, sendCommander, sendComman
             flix.startRecordingDemoFromBackground(flixVars)
                 .then((helperTab) => {
 
-                    if (flixVars.tabId && helperTab.id) {
+                    if (flixVars.tabId && helperTab && helperTab.id) {
 
                         console.log('flixVars saved')
                         console.log(flixVars)
@@ -498,9 +503,23 @@ chrome.runtime.onMessage.addListener(function (msgObj, sendCommander, sendComman
 
                                 sendCommandResp('Started recording')
                             })
+                    } else {
+                        console.error('flix_startRecording: missing tabId or helper tab', {
+                            tabId: flixVars.tabId,
+                            helperTab
+                        })
+                        sendCommandResp({
+                            success: false,
+                            error: 'Failed to open helper tab or capture tab id'
+                        })
                     }
-
-
+                })
+                .catch((err) => {
+                    console.error('flix_startRecording failed', err)
+                    sendCommandResp({
+                        success: false,
+                        error: err && err.message ? err.message : String(err)
+                    })
                 })
 
             break
@@ -768,8 +787,6 @@ chrome.runtime.onMessageExternal.addListener(function (msgObj, sendCommander, se
 
 chrome.runtime.onMessage.addListener(function (msgObj, sendCommander, sendCommandResp) {
 
-    console.log(msgObj)
-
     switch (msgObj.type) {
         case 'check_authenticate':
             console.log('bg- check_authenticate called')
@@ -785,7 +802,7 @@ chrome.runtime.onMessage.addListener(function (msgObj, sendCommander, sendComman
                     console.log('authenticate failed')
                 })
 
-            break
+            return true
         case 'authenticate':
             console.log('bg- authenticate called')
             chrome.storage.local.remove(['authData', 'userWorkspaces', 'currentSelectedWorkspace'])
@@ -803,7 +820,7 @@ chrome.runtime.onMessage.addListener(function (msgObj, sendCommander, sendComman
                     console.log('authenticate failed')
                 })
 
-            break
+            return true
         case 'unauthenticate':
             chrome.storage.local.remove(['authData', 'userWorkspaces', 'currentSelectedWorkspace'])
                 .then(() => {
@@ -811,10 +828,10 @@ chrome.runtime.onMessage.addListener(function (msgObj, sendCommander, sendComman
                     console.log('unauthenticated')
                     sendCommandResp('unauthenticated')
                 })
-            break
+            return true
+        default:
+            return false
     }
-
-    return true
 
 })
 

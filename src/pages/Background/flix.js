@@ -14,7 +14,7 @@ const MESSAGE_NAMES = {
     RemoveEventListeners: 'ld-remove-event-listeners',
     FrameInfoReport: 'ld-frame-info-report',
     Click: 'ld-click-event',
-    Drag: 'ld-drag-event',
+    CursorMove: 'ld-cursor-move',
     Scroll: 'ld-scroll-event',
     KeyPress: 'ld-keypress-event',
     ScreenshotRequest: 'ld-screenshot-request',
@@ -29,6 +29,10 @@ const MESSAGE_NAMES_VALUES = Object.values(MESSAGE_NAMES)
 
 const millisecondsPerBlob = 100
 
+function clearCursorPositions(flixVars) {
+    flixVars.cursorPositions = []
+}
+
 function resetVars(flixVars) {
     console.log('resetting flixVars')
 
@@ -37,6 +41,7 @@ function resetVars(flixVars) {
 
     flixVars.demoTitle = ''
     flixVars.capturedEvents = []
+    clearCursorPositions(flixVars)
     flixVars.demoClickCount = 0
     flixVars.lastDemoEvent = undefined
     flixVars.demoData = {}
@@ -78,7 +83,7 @@ function listenerClosure(flixVars) {
             case MESSAGE_NAMES.Click:
                 await onClick(flixVars, message, sender)
                 break
-            case MESSAGE_NAMES.Drag:
+            case MESSAGE_NAMES.CursorMove:
                 onInterestingEvent(flixVars, message, sender)
                 break
             case MESSAGE_NAMES.Scroll:
@@ -99,6 +104,8 @@ function listenerClosure(flixVars) {
 function startAIRecording(flixVars) {
 
     console.log("startAIRecording called final")
+
+    clearCursorPositions(flixVars)
 
     flixVars.messageListenerHandler = listenerClosure(flixVars)
     chrome.runtime.onMessage.addListener(flixVars.messageListenerHandler)
@@ -149,6 +156,7 @@ function completeAutoRecording(autoRecordingId, workspaceId, authToken) {
 
 function start(flixVars) {
 
+    clearCursorPositions(flixVars)
 
     flixVars.messageListenerHandler = listenerClosure(flixVars)
     chrome.runtime.onMessage.addListener(flixVars.messageListenerHandler)
@@ -175,21 +183,20 @@ function stop(flixVars, storage) {
         stopTakingScreenshots(flixVars)
 
         return stopAIRecording(flixVars, storage.autoRecordingId)
+            .then(() => {
+                clearCursorPositions(flixVars)
+            })
     }
 }
 
 async function onClick(flixVars, message, sender) {
 
-    if (
-        sender.tab === undefined ||
-        sender.tab.id === undefined ||
-        sender.frameId === undefined
-    ) {
+    if (sender.tab === undefined || sender.tab.id === undefined) {
         console.log('Malformed message', { message, sender })
         return
     }
     const tabId = sender.tab.id
-    const frameId = sender.frameId
+    const frameId = sender.frameId ?? 0
 
     const { clickId, frameX, frameY, timeMs, targetElementType, targetHTML, targetText } = message
 
@@ -378,27 +385,36 @@ function sendAutoRecordingEvent(event, autoRecordingId, workspaceId) {
 
 function onInterestingEvent(flixVars, message, sender) {
 
-    if (
-        sender.tab === undefined ||
-        sender.tab.id === undefined ||
-        sender.frameId === undefined
-    ) {
+    if (sender.tab === undefined || sender.tab.id === undefined) {
         log('Malformed message', { message, sender })
         return
     }
     const tabId = sender.tab.id
-    const frameId = sender.frameId
+    const frameId = sender.frameId ?? 0
 
     // Ignore events from all tabs other than the one we're recording video of
     // if (tabId !== this.videoTabId) {
     //   return
     // }
 
+    if (message.name === MESSAGE_NAMES.CursorMove) {
+        const { timeMs, frameX, frameY } = message
+        const point = {
+            frameX,
+            frameY,
+            timeMs,
+        }
+        if (!Array.isArray(flixVars.cursorPositions)) {
+            flixVars.cursorPositions = []
+        }
+        flixVars.cursorPositions.push(point)
+
+        chrome.storage.local.set(flixVars)
+        return
+    }
+
     let type = ''
     switch (message.name) {
-        case MESSAGE_NAMES.Drag:
-            type = 'dragging'
-            break
         case MESSAGE_NAMES.KeyPress:
             type = 'typing'
             break
@@ -753,6 +769,10 @@ async function uploadVideo(videoBlob, workspaceId, flixVars) {
         .then(res => {
             return res.json()
         })
+        .then((data) => {
+            clearCursorPositions(flixVars)
+            return data
+        })
     //send payload to server
 }
 
@@ -817,6 +837,7 @@ async function afterRecordingVideo(flixVars) {
                 windowMeasures: flixVars.demoData.windowMeasures ? flixVars.demoData.windowMeasures : {},
                 workspaceId: flixVars.demoData.workspaceId,
                 capturedEvents: flixVars.capturedEvents,
+                cursorPositions: Array.isArray(flixVars.cursorPositions) ? flixVars.cursorPositions : [],
                 videoBase64: videoBase64,
                 screenshots,
                 videoStartMs: flixVars.videoStartMs,
@@ -827,6 +848,8 @@ async function afterRecordingVideo(flixVars) {
             console.log(JSON.stringify(payload, null, 2))
 
             let payloadDataUrl = createDataUrl(payload)
+
+            clearCursorPositions(flixVars)
 
             return {
                 payloadDataUrl,
@@ -976,7 +999,9 @@ async function startRecordingVideoWithHelperTab(flixVars) {
     flixVars.isRecordingVideo = true
 
     let currentTab = await getCurrentTabInfo()
-
+    if (currentTab.tabId) {
+        flixVars.tabId = currentTab.tabId
+    }
 
     let { tab, window } = await openHelperTab()
     let helperTab = tab
@@ -989,7 +1014,7 @@ async function startRecordingVideoWithHelperTab(flixVars) {
     let response = await sendMessageToTab(helperTab.id, {
         name: 'START_VIDEO_RECORDING',
         data: {
-            currentTabId: currentTab.id,
+            currentTabId: currentTab.tabId,
             tabInfo: currentTab
         },
     })
@@ -999,6 +1024,12 @@ async function startRecordingVideoWithHelperTab(flixVars) {
     }
 
     console.log(response)
+
+    if (currentTab.tabId) {
+        await sendMessageToTab(currentTab.tabId, {
+            name: MESSAGE_NAMES.AddEventListeners,
+        })
+    }
 
     return { helperTab, window }
 }
@@ -1120,6 +1151,7 @@ function startRecordingAIDemoFromBackground(flixVars) {
             console.log(err)
 
             chrome.storage.local.set({ recording: false })
+            return Promise.reject(err)
         })
 }
 
@@ -1146,10 +1178,13 @@ function startRecordingDemoFromBackground(flixVars) {
             console.log(err)
 
             chrome.storage.local.set({ recording: false })
+            return Promise.reject(err)
         })
 }
 
-function startRecordingVideoFromBackground(flixVars) {
+async function startRecordingVideoFromBackground(flixVars) {
+    clearCursorPositions(flixVars)
+
     // chrome.tabs.executeScript(
     //   {
     //     file: 'content-script.js',
@@ -1159,15 +1194,19 @@ function startRecordingVideoFromBackground(flixVars) {
     //
     //   })
 
+    await new Promise((resolve) => {
+        chrome.storage.local.set({ demoData: flixVars.demoData, recording: true, type: 'Video' }, resolve)
+    })
 
-    chrome.storage.local.set({ demoData: flixVars.demoData, recording: true, type: 'Video' })
+    try {
+        return await startRecordingVideoWithHelperTab(flixVars)
+    } catch (err) {
+        console.log(err)
 
-    return startRecordingVideoWithHelperTab(flixVars)
-        .catch((err) => {
-            console.log(err)
-
-            chrome.storage.local.set({ recording: false })
+        await new Promise((resolve) => {
+            chrome.storage.local.set({ recording: false }, resolve)
         })
+    }
 }
 
 

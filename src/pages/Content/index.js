@@ -46,7 +46,6 @@ if (!isInFrameCheck) {
                 innerHeight: window.innerHeight,
                 devicePixelRatio: window.devicePixelRatio
             })
-
         }
 
         if (msgObj.type === 'takeScreenshot') {
@@ -95,7 +94,6 @@ if (!isInFrameCheck) {
         if (msgObj.type === 'Background-uploadStory') {
             console.log('Background-uploadStory handler')
 
-            debugger
             let storyId = msgObj.storyId
             let authToken = msgObj.authToken
             let blobData = getJsonFromDataUrl(msgObj.payloadDataUrl)

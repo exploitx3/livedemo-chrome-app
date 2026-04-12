@@ -1,14 +1,14 @@
-import React, {useEffect, useState} from 'react'
+import React, { useEffect, useState } from 'react'
 import styled from 'styled-components'
 import Colors from '../../../../constants/mainColors'
-import {BarsOutlined, LeftCircleOutlined, PlayCircleOutlined, PlusCircleOutlined} from '@ant-design/icons'
+import { BarsOutlined, LeftCircleOutlined, PlayCircleOutlined, PlusCircleOutlined } from '@ant-design/icons'
 import IconTextButton from '../../components/IconTextButton/IconTextButton'
 import Header from '../../components/Header/Header'
 import Spinner from '../../components/Spinner/Spinner'
-import {useNavigate} from 'react-router-dom'
-import {useRecoilState, useRecoilValue} from 'recoil'
+import { useNavigate } from 'react-router-dom'
+import { useRecoilState, useRecoilValue } from 'recoil'
 import * as state from '../../state'
-import {Input} from 'antd'
+import { Input } from 'antd'
 import shortUUID from 'short-uuid'
 import axios from '../../../../helpers/axiosInstance'
 import * as ENV from '../../../../config.json'
@@ -18,7 +18,7 @@ async function getTabFromBG() {
     return new Promise(function (resolve, reject) {
 
         chrome.windows.getCurrent(w => {
-            chrome.tabs.query({active: true, windowId: w.id}, tabs => {
+            chrome.tabs.query({ active: true, windowId: w.id }, tabs => {
 
 
                 resolve(tabs[0])
@@ -47,6 +47,7 @@ const CreateNewFlixDemo = function (props) {
     const [windowMeasures, setWindowMeasures] = useRecoilState(state.windowMeasures)
 
     const [isSaving, setIsSaving] = useState(false)
+    const [isLoading, setIsLoading] = useState(false)
 
     if (!newDemoName) {
         setNewDemoName('')
@@ -131,6 +132,46 @@ const CreateNewFlixDemo = function (props) {
 
     })
 
+
+    function getWorkspaces(authToken) {
+
+        return axios.get('/workspaces', {
+            headers: {
+                Authorization: `Bearer ${authToken}`,
+            }
+        })
+            .then((res) => {
+
+
+                return res.data
+            })
+    }
+
+
+
+
+    function updateResources(currentSelectedWorkspace, authDataState) {
+
+        setIsLoading(true)
+
+        return getWorkspaces(authDataState.token)
+            .then(() => {
+                setIsLoading(false)
+            })
+            .catch(e => {
+                console.log(e)
+                setIsLoading(false)
+                if (e.response?.status === 401) {
+                    onLogout()
+                }
+            })
+    }
+
+    useEffect(() => {
+
+        updateResources(currentSelectedWorkspace, authData)
+    }, [])
+
     useEffect(() => {
 
 
@@ -140,7 +181,7 @@ const CreateNewFlixDemo = function (props) {
         } else {
 
             setIsNameChosen(false)
-            chrome.action.setIcon({path: 'logo-128.png'})
+            chrome.action.setIcon({ path: 'logo-128.png' })
 
 
             getTab()
@@ -263,10 +304,10 @@ const CreateNewFlixDemo = function (props) {
                     .then((measures) => {
                         setWindowMeasures(measures)
 
-                        return {measures, activeTab}
+                        return { measures, activeTab }
                     })
             })
-            .then(({measures, activeTab}) => {
+            .then(({ measures, activeTab }) => {
                 console.log('activeTab')
                 console.log(activeTab)
 
@@ -295,7 +336,7 @@ const CreateNewFlixDemo = function (props) {
         let newSessionRecordingId = shortUUID.generate()
         setSessionRecordingId(newSessionRecordingId)
 
-        chrome.action.setIcon({path: 'logo-recording-128.png'})
+        chrome.action.setIcon({ path: 'logo-recording-128.png' })
         setIsRecording(true)
 
         return getTab()
@@ -305,10 +346,10 @@ const CreateNewFlixDemo = function (props) {
                     .then((measures) => {
                         setWindowMeasures(measures)
 
-                        return {measures, activeTab}
+                        return { measures, activeTab }
                     })
             })
-            .then(({measures, activeTab}) => {
+            .then(({ measures, activeTab }) => {
                 console.log('activeTab')
                 console.log(activeTab)
 
@@ -371,7 +412,7 @@ const CreateNewFlixDemo = function (props) {
         let newSessionRecordingId = shortUUID.generate()
         setSessionRecordingId(newSessionRecordingId)
 
-        chrome.action.setIcon({path: 'logo-recording-128.png'})
+        chrome.action.setIcon({ path: 'logo-recording-128.png' })
         setIsRecording(true)
 
         return getTab()
@@ -381,10 +422,10 @@ const CreateNewFlixDemo = function (props) {
                     .then((measures) => {
                         setWindowMeasures(measures)
 
-                        return {measures, activeTab}
+                        return { measures, activeTab }
                     })
             })
-            .then(({measures, activeTab}) => {
+            .then(({ measures, activeTab }) => {
                 console.log('activeTab')
                 console.log(activeTab)
 
@@ -427,7 +468,7 @@ const CreateNewFlixDemo = function (props) {
 
         setIsNameChosen(true)
 
-        chrome.action.setIcon({path: 'logo-128.png'})
+        chrome.action.setIcon({ path: 'logo-128.png' })
         setIsRecording(false)
 
 
@@ -469,7 +510,7 @@ const CreateNewFlixDemo = function (props) {
     }
 
     function onLogout() {
-        chrome.runtime.sendMessage({type: 'unauthenticate'})
+        chrome.runtime.sendMessage({ type: 'unauthenticate' })
         setAuthData({})
         navigate('/login')
     }
@@ -477,7 +518,7 @@ const CreateNewFlixDemo = function (props) {
     return (
         <C.NewDemo>
             <C.Wrapper>
-                <Header/>
+                <Header />
                 <C.MainContainer>
                     <C.StyledInput
                         name={'name-input'}
@@ -494,8 +535,8 @@ const CreateNewFlixDemo = function (props) {
                             startRecording()
                         }}
                     />
-                    {isSaving ? (
-                        <Spinner/>
+                    {isSaving || isLoading ? (
+                        <Spinner />
                     ) : (
                         <C.ButtonsWrapper>
 
@@ -504,7 +545,7 @@ const CreateNewFlixDemo = function (props) {
                                 onClick={() => {
                                     return startAIRecording()
                                 }}
-                                img={<C.StartRecordingIcon/>}
+                                img={<C.StartRecordingIcon />}
                                 text={'AI Recording'}
                                 buttonStyles={{
                                     justifyContent: 'flex-start',
@@ -522,7 +563,7 @@ const CreateNewFlixDemo = function (props) {
                                 onClick={() => {
                                     return startRecording()
                                 }}
-                                img={<C.StartRecordingIcon/>}
+                                img={<C.StartRecordingIcon />}
                                 text={'Manual Recording'}
                                 buttonStyles={{
                                     justifyContent: 'flex-start',
@@ -548,7 +589,7 @@ const CreateNewFlixDemo = function (props) {
                                             // navigate(`/story/${newDemo._id}`)
                                         })
                                 }}
-                                img={<C.PlusIcon/>}
+                                img={<C.PlusIcon />}
                                 text={'Create Blank'}
                                 buttonStyles={{
                                     justifyContent: 'flex-start',
@@ -573,7 +614,7 @@ const CreateNewFlixDemo = function (props) {
                             onClick={() => {
                                 navigate('/dashboard')
                             }}
-                            img={<C.DashboardIcon/>}
+                            img={<C.DashboardIcon />}
                             text={'Dashboard'}
                             buttonStyles={{
                                 boxShadow: 'none',
@@ -592,7 +633,7 @@ const CreateNewFlixDemo = function (props) {
                                 console.log(backLocation)
                                 navigate((backLocation === '/new-demo' || backLocation === '/login') ? '/dashboard/livedemos' : backLocation)
                             }}
-                            img={<C.BackIcon/>}
+                            img={<C.BackIcon />}
                             text={'Back'}
                             buttonStyles={{
                                 boxShadow: 'none',

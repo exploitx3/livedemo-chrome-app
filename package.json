@@ -1,6 +1,6 @@
 {
   "name": "livedemo-app",
-  "version": "1.0.32",
+  "version": "1.0.33",
   "description": "LiveDemo chrome extension",
   "license": "MIT",
   "author": "George Apostolov",
@@ -17,7 +17,7 @@
     "@sentry/browser": "^7.51.2",
     "antd": "3.23.2",
     "atob": "^2.1.2",
-    "axios": "^0.26.1",
+    "axios": "0.26.1",
     "btoa": "^1.2.1",
     "buffer": "^6.0.3",
     "css-tree": "^2.1.0",
