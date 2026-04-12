@@ -80,6 +80,10 @@ html.${HTML_CLASS} ::-webkit-scrollbar-button,
 html.${HTML_CLASS} ::-webkit-resizer {
   cursor: none !important;
 }
+/* System cursor on iframe chrome; parent doc does not receive mousemove inside OOPIFs, so the ghost cannot track there. */
+html.${HTML_CLASS} iframe:not(#${ROOT_ID}) {
+  cursor: auto !important;
+}
 #${ROOT_ID}.ld-core-cursor-root {
   --cursor-w: 40px;
   --cursor-h: calc(var(--cursor-w) * 245 / 155);

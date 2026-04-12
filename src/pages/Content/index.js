@@ -73,9 +73,6 @@ if (!isInFrameCheck) {
             window.config.workspaceId = workspaceId
             window.config.storyId = storyId
             window.config.authToken = authToken
-            // window.postMessage({
-            //   type: 'capture'
-            // })
         }
 
         if (msgObj.type === 'Background-captureStarted') {

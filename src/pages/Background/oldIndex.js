@@ -374,6 +374,9 @@ chrome.runtime.onMessage.addListener(function (msgObj, sendCommander, sendComman
         }
         flixVars.demoData.storyId = storyId
         flixVars.demoData.workspaceId = workspaceId
+        if (authToken) {
+            flixVars.authData = {...(flixVars.authData || {}), token: authToken}
+        }
         flixVars.recording = true
         flixVars.type = 'Video'
 
@@ -665,18 +668,32 @@ chrome.runtime.onMessage.addListener(function (msgObj, sendCommander, sendComman
             console.log(msgObj)
             chrome.action.setIcon({path: 'logo-recording-128.png'})
 
+            // MV3: the service worker may have restarted; in-memory flixVars loses demoData/authData.
+            // Recording start persists those via chrome.storage.local — merge before upload.
+            chrome.storage.local.get(null)
+                .then((storage) => {
+                    flixVars = {...flixVarsGlobal, ...storage}
+                    flixVars.videoBlobsUrl = msgObj.videoBlobsUrl
+                    flixVars.videoStartMs = msgObj.videoStartMs
+                    flixVars.videoEndMs = msgObj.videoEndMs
 
-            flixVars.videoBlobsUrl = msgObj.videoBlobsUrl
-            flixVars.videoStartMs = msgObj.videoStartMs
-            flixVars.videoEndMs = msgObj.videoEndMs
+                    const workspaceId = flixVars.demoData && flixVars.demoData.workspaceId
+                    if (!workspaceId) {
+                        console.error('helper_video_stopRecording: missing demoData.workspaceId', {
+                            hasDemoData: !!flixVars.demoData,
+                            storageKeys: storage && Object.keys(storage),
+                        })
+                        return Promise.reject(new Error('Missing workspaceId for video upload'))
+                    }
 
-            flix.getBlobFromUrl(flixVars.videoBlobsUrl)
-                .then((videoBlobs) => {
-                    console.log(videoBlobs)
+                    return flix.getBlobFromUrl(flixVars.videoBlobsUrl)
+                        .then((videoBlobs) => {
+                            console.log(videoBlobs)
 
-                    flixVars.videoBlobs = videoBlobs
+                            flixVars.videoBlobs = videoBlobs
 
-                    return flix.uploadVideo(videoBlobs, flixVars.demoData.workspaceId, flixVars)
+                            return flix.uploadVideo(videoBlobs, workspaceId, flixVars)
+                        })
                 })
                 .then(() => {
 

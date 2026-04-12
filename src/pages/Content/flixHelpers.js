@@ -1,6 +1,6 @@
 import short from 'short-uuid'
 import TagNames from '../../constants/TagNames'
-import { installRecordingTabCursor, removeRecordingTabCursor } from './recordingTabCursor.js'
+import { removeRecordingTabCursor } from './recordingTabCursor.js'
 
 const MESSAGE_NAMES = {
   CheckContentScript: 'flix_checkContentScript',
@@ -205,6 +205,7 @@ function handleMessageFromExtensionClosure(flixVars) {
 
       console.log('Got message to remove event listeners')
       flixVars.cursorPositions = []
+      removeRecordingTabCursor(flixVars)
       removeEventListeners(flixVars)
       sendResponse()
     } else if (message.name === MESSAGE_NAMES.StartAIRecording) {
@@ -374,12 +375,6 @@ function addEventListeners(flixVars) {
 
   document.addEventListener('mousemove', flixVars.detectMouseMoveHandler, true)
 
-  chrome.storage.local.get(['type']).then(({ type }) => {
-    if (type === 'Video') {
-      installRecordingTabCursor(flixVars)
-    }
-  })
-
   document.addEventListener('click', flixVars.detectMouseDownHandler, true)
   // document.addEventListener('mousedown', flixVars.detectMouseDownHandler, true)
   document.addEventListener('mouseup', flixVars.detectMouseUpHandler, true)
@@ -389,8 +384,6 @@ function addEventListeners(flixVars) {
 
 function removeEventListeners(flixVars) {
   console.log('Removing event listeners')
-
-  removeRecordingTabCursor(flixVars)
 
   document.removeEventListener('mousemove', flixVars.detectMouseMoveHandler, true)
   document.removeEventListener('click', flixVars.detectMouseDownHandler, true)

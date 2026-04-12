@@ -29,6 +29,25 @@ const MESSAGE_NAMES_VALUES = Object.values(MESSAGE_NAMES)
 
 const millisecondsPerBlob = 100
 
+/** Survives flixVars ← storage merges (functions are not persisted). Used to remove the real listener on stop. */
+let activeRecordingMessageListener = null
+
+function registerRecordingMessageListener(flixVars, handler) {
+    if (activeRecordingMessageListener) {
+        chrome.runtime.onMessage.removeListener(activeRecordingMessageListener)
+    }
+    activeRecordingMessageListener = handler
+    flixVars.messageListenerHandler = handler
+    chrome.runtime.onMessage.addListener(handler)
+}
+
+function clearRecordingMessageListener() {
+    if (activeRecordingMessageListener) {
+        chrome.runtime.onMessage.removeListener(activeRecordingMessageListener)
+        activeRecordingMessageListener = null
+    }
+}
+
 function clearCursorPositions(flixVars) {
     flixVars.cursorPositions = []
 }
@@ -107,8 +126,7 @@ function startAIRecording(flixVars) {
 
     clearCursorPositions(flixVars)
 
-    flixVars.messageListenerHandler = listenerClosure(flixVars)
-    chrome.runtime.onMessage.addListener(flixVars.messageListenerHandler)
+    registerRecordingMessageListener(flixVars, listenerClosure(flixVars))
     startTakingScreenshots(flixVars)
     return Promise.resolve()
 }
@@ -158,8 +176,7 @@ function start(flixVars) {
 
     clearCursorPositions(flixVars)
 
-    flixVars.messageListenerHandler = listenerClosure(flixVars)
-    chrome.runtime.onMessage.addListener(flixVars.messageListenerHandler)
+    registerRecordingMessageListener(flixVars, listenerClosure(flixVars))
     startTakingScreenshots(flixVars)
 
     return startRecordingLiveDemoWithHelperTab(flixVars)
@@ -169,24 +186,24 @@ function start(flixVars) {
 function stop(flixVars, storage) {
     console.log(`Stopping demo recording of type ${flixVars.type}`)
 
-    chrome.runtime.onMessage.removeListener(flixVars.messageListenerHandler)
+    clearRecordingMessageListener()
 
-    if (flixVars.type === 'FlixDemo') {
-
+    // Flix live demo + plain tab video: helper tab records; same STOP_RECORDING path.
+    if (flixVars.type === 'FlixDemo' || flixVars.type === 'Video') {
         stopTakingScreenshots(flixVars)
-
         return stopRecordingVideo(storage)
-        // After video stops, this.afterRecordingVideo() will be called
+    }
 
-    } else {
-        // AI stop recording
+    if (flixVars.type === 'AIDemo') {
         stopTakingScreenshots(flixVars)
-
         return stopAIRecording(flixVars, storage.autoRecordingId)
             .then(() => {
                 clearCursorPositions(flixVars)
             })
     }
+
+    stopTakingScreenshots(flixVars)
+    return Promise.resolve()
 }
 
 async function onClick(flixVars, message, sender) {
@@ -237,9 +254,9 @@ async function onClick(flixVars, message, sender) {
 
         chrome.storage.local.set(flixVars)
 
-        if (flixVars.type !== 'FlixDemo') {
+        if (flixVars.type === 'AIDemo') {
             debugger
-            // If demo is AI (autoRecordingAI) upload the click event with the screenshot as event
+            // AI auto-recording: upload the click event with the screenshot as event
             await sendAutoRecordingEvent({
                 ...event,
                 imageData: flixVars.currentScreenshotDataUrl
@@ -269,7 +286,8 @@ function flix_stopRecording(flixVars, flixVarsGlobal, sendCommandResp) {
             return chrome.storage.local.get(null)
         })
         .then((storage) => {
-            if(!storage.recording && flixVars.type !== 'FlixDemo') {
+            const stopType = storage.type ?? flixVars.type
+            if (!storage.recording && stopType !== 'FlixDemo' && stopType !== 'Video') {
 
                 chrome.runtime.sendMessage({
                     name: 'popup_recordingCompleted',
@@ -298,7 +316,9 @@ function flix_stopRecording(flixVars, flixVarsGlobal, sendCommandResp) {
 
             chrome.action.setBadgeText({ text: '' });
 
-            if (flixVars.type === "FlixDemo") {
+            const recordType = flixVars.type
+
+            if (recordType === 'FlixDemo' || recordType === 'Video') {
 
                 stopRecordingDemoFromBackground(flixVars, storage)
                     .then(() => {
@@ -307,7 +327,11 @@ function flix_stopRecording(flixVars, flixVarsGlobal, sendCommandResp) {
                             success: true
                         })
                     })
-            } else {
+                    .catch((err) => {
+                        console.error('flix_stopRecording Flix/Video', err)
+                        sendCommandResp({ success: false, error: err && err.message ? err.message : String(err) })
+                    })
+            } else if (recordType === 'AIDemo') {
 
                 stopRecordingDemoFromBackground(flixVars, storage)
                     .then(() => {
@@ -320,7 +344,25 @@ function flix_stopRecording(flixVars, flixVarsGlobal, sendCommandResp) {
                                 })
                             })
                     })
+                    .catch((err) => {
+                        console.error('flix_stopRecording AIDemo', err)
+                        sendCommandResp({ success: false, error: err && err.message ? err.message : String(err) })
+                    })
 
+            } else {
+
+                console.warn('flix_stopRecording: unknown type, running demo stop only', recordType)
+                stopRecordingDemoFromBackground(flixVars, storage)
+                    .then(() => {
+
+                        sendCommandResp({
+                            success: true
+                        })
+                    })
+                    .catch((err) => {
+                        console.error('flix_stopRecording fallback', err)
+                        sendCommandResp({ success: false, error: err && err.message ? err.message : String(err) })
+                    })
             }
         })
 }
@@ -355,10 +397,7 @@ function stopAndOpenAutoRecording(flixVars, flixVarsGlobal, sendCommandResp) {
                     })
                 }
 
-                return promiseChain.then(() => {
-                    sendCommandResp({ msg: 'Stopped recording' })
-                })
-
+                return promiseChain
             })
             .then(() => {
                 resolve()
@@ -1195,7 +1234,11 @@ async function startRecordingVideoFromBackground(flixVars) {
     //   })
 
     await new Promise((resolve) => {
-        chrome.storage.local.set({ demoData: flixVars.demoData, recording: true, type: 'Video' }, resolve)
+        const toStore = { demoData: flixVars.demoData, recording: true, type: 'Video' }
+        if (flixVars.authData) {
+            toStore.authData = flixVars.authData
+        }
+        chrome.storage.local.set(toStore, resolve)
     })
 
     try {

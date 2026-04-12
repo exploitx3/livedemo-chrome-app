@@ -2,6 +2,7 @@ import helpers from './helpers'
 import hooks from './hooks'
 import short from 'short-uuid'
 import flixHelpers from './flixHelpers'
+import { installRecordingTabCursor } from './recordingTabCursor.js'
 
 let framesMap = new Map()
 
@@ -514,6 +515,10 @@ function setup() {
       }, function(res) {
         console.log('ld-video-request response from background - ' + res)
       })
+    }
+
+    if (event.data.type === 'ld-take-video-install-cursor') {
+      installRecordingTabCursor(flixVars)
     }
 
     // if(event.data.type === 'flix_startRecording') {
