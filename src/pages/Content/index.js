@@ -102,6 +102,15 @@ if (!isInFrameCheck) {
             return handleUploadStory(blobData, authToken)
                 .then(storyDoc => {
                     console.log(`Background-uploadStory handler - successfully uploaded story ${storyDoc._id}`)
+
+                    const videoBase64 = blobData && blobData.videoBase64
+                    if (videoBase64) {
+                        window.postMessage({
+                            type: 'LiveDemoPreview-uploadStoryVideo',
+                            storyId: storyDoc._id || storyId,
+                            videoBase64
+                        }, window.location.origin)
+                    }
                 })
         }
 
