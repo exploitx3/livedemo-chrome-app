@@ -67,6 +67,7 @@
       "resources": [
         "takeScreenshot.bundle.js",
         "takeVideo.bundle.js",
+        "takeManualRecording.bundle.js",
         "captureScript.bundle.js",
         "injectScript.js",
         "helperTab.html",

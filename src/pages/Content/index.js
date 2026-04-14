@@ -48,6 +48,19 @@ if (!isInFrameCheck) {
             })
         }
 
+        if (msgObj.type === 'takeManualRecording') {
+            injectScript('takeManualRecording.bundle.js')
+
+            window.config.demoData = msgObj.demoData
+            // INSERT_YOUR_CODE
+            if (msgCommander && msgCommander.tab && msgCommander.tab.id) {
+                window.config.demoData = window.config.demoData || {};
+                window.config.demoData.tabId = msgCommander.tab.id;
+            }
+    
+            sendResponse({ ok: true })
+        }
+
         if (msgObj.type === 'takeScreenshot') {
             injectScript('takeScreenshot.bundle.js')
 
@@ -58,10 +71,13 @@ if (!isInFrameCheck) {
             window.config.workspaceId = workspaceId
             window.config.storyId = storyId
             window.config.authToken = authToken
+            sendResponse({ ok: true })
+
             // window.postMessage({
             //   type: 'capture'
             // })
         }
+
 
         if (msgObj.type === 'takeVideo') {
             injectScript('takeVideo.bundle.js')
@@ -73,6 +89,8 @@ if (!isInFrameCheck) {
             window.config.workspaceId = workspaceId
             window.config.storyId = storyId
             window.config.authToken = authToken
+            sendResponse({ ok: true })
+
         }
 
         if (msgObj.type === 'Background-captureStarted') {

@@ -201,6 +201,14 @@ export const tabInfo = atom({
   // ]
 })
 
+/** Last `chrome.action.getUserSettings().isOnToolbar` (synced with chrome.storage.local in popup) */
+export const EXTENSION_ACTION_ON_TOOLBAR_STORAGE_KEY = 'livedemo_extension_action_on_toolbar'
+
+export const extensionActionOnToolbarState = atom({
+  key: 'extensionActionOnToolbar',
+  default: null,
+})
+
 export const windowMeasures = atom({
   key: 'windowMeasures',
   default: getItemFromRecoilState('windowMeasures'),

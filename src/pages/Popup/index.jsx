@@ -57,7 +57,8 @@ const initialStore = {
   isNameChosen: false,
   newDemoName: null,
   userWorkspaces: null,
-  currentSelectedWorkspace: null
+  currentSelectedWorkspace: null,
+  extensionActionOnToolbar: null,
 }
 
 async function initializeState({ set }) {
@@ -83,6 +84,11 @@ async function initializeState({ set }) {
     localStorage.setItem('recoilState', JSON.stringify(storedState))
   }
 
+  let toolbarCached = await getItemFromStorage(state.EXTENSION_ACTION_ON_TOOLBAR_STORAGE_KEY)
+  if (toolbarCached !== true && toolbarCached !== false && storedState.extensionActionOnToolbar != null) {
+    toolbarCached = storedState.extensionActionOnToolbar
+  }
+
   set(state.authDataState, authDataFromStorage ? authDataFromStorage : storedState.authData)
   set(state.isRecordingState, storedState.isRecording)
   set(state.previousLocationState, storedState.previousLocation ? storedState.previousLocation : initialStore.previousLocation)
@@ -90,6 +96,15 @@ async function initializeState({ set }) {
   set(state.newDemoNameState, storedState.newDemoName)
   set(state.userWorkspaces, storedState.userWorkspaces)
   set(state.currentSelectedWorkspace, storedState.currentSelectedWorkspace)
+  set(
+    state.extensionActionOnToolbarState,
+    toolbarCached === true ? true : toolbarCached === false ? false : null
+  )
+
+  const initialAuth = authDataFromStorage ? authDataFromStorage : storedState.authData
+  if (initialAuth && initialAuth.token) {
+    chrome.storage.local.set({ authData: initialAuth })
+  }
 }
 
 function DebugObserver() {
@@ -101,6 +116,7 @@ function DebugObserver() {
     let newDemoName = snapshot.getLoadable(state.newDemoNameState).contents
     let userWorkspaces = snapshot.getLoadable(state.userWorkspaces).contents
     let currentSelectedWorkspace = snapshot.getLoadable(state.currentSelectedWorkspace).contents
+    let extensionActionOnToolbar = snapshot.getLoadable(state.extensionActionOnToolbarState).contents
 
     localStorage.setItem('recoilState', JSON.stringify({
       authData,
@@ -109,8 +125,19 @@ function DebugObserver() {
       isNameChosen,
       newDemoName,
       userWorkspaces,
-      currentSelectedWorkspace
+      currentSelectedWorkspace,
+      extensionActionOnToolbar,
     }))
+
+    if (extensionActionOnToolbar === true || extensionActionOnToolbar === false) {
+      chrome.storage.local.set({
+        [state.EXTENSION_ACTION_ON_TOOLBAR_STORAGE_KEY]: extensionActionOnToolbar,
+      })
+    }
+
+    if (authData && authData.token) {
+      chrome.storage.local.set({ authData })
+    }
 
   })
 

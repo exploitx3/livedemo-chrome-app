@@ -521,8 +521,21 @@ function setup() {
       installRecordingTabCursor(flixVars)
     }
 
-    // if(event.data.type === 'flix_startRecording') {
-    // }
+    if (event.data.type === 'flix_startRecording') {
+
+      chrome.runtime.sendMessage(
+        {
+          type: 'flix_startRecording',
+          demoData: window.config.demoData,
+        },
+        () => {
+          const err = chrome.runtime.lastError
+          if (err) {
+            console.log(err.message)
+          }
+        }
+      )
+    }
 
     // if(event.data.type === 'flix_stopRecording') {
     //   flixHelpers.destroy(flixVars)

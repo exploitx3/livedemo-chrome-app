@@ -64,6 +64,17 @@ var flixVarsGlobal = {
 
 var flixVars = {...flixVarsGlobal}
 
+/** Prefer message payload; otherwise use auth persisted in chrome.storage.local (login / popup sync). */
+function resolveAuthDataForRecording(msgObj, callback) {
+    if (msgObj && msgObj.authData && msgObj.authData.token) {
+        callback(msgObj.authData)
+        return
+    }
+    chrome.storage.local.get(['authData'], (result) => {
+        callback(result && result.authData)
+    })
+}
+
 chrome.runtime.onInstalled.addListener(function (event) {
     console.log('Installed .....')
 
@@ -486,83 +497,121 @@ chrome.runtime.onMessage.addListener(function (msgObj, sendCommander, sendComman
                     sendCommandResp('Saved autoRecordingId')
                 })
             break;
-        case 'flix_startRecording':
-
-            flixVars.IsAttached = true
-            flixVars.authData = msgObj.authData
-            flixVars.demoData = msgObj.demoData
-            flixVars.recording = true
-            flixVars.type = 'FlixDemo'
-
-
-            flix.startRecordingDemoFromBackground(flixVars)
-                .then((helperTab) => {
-
-                    if (flixVars.tabId && helperTab && helperTab.id) {
-
-                        console.log('flixVars saved')
-                        console.log(flixVars)
-                        flixVars.helperTabId = helperTab.id
-
-                        chrome.storage.local.set(flixVars)
-                            .then(() => {
-
-                                sendCommandResp('Started recording')
-                            })
-                    } else {
-                        console.error('flix_startRecording: missing tabId or helper tab', {
-                            tabId: flixVars.tabId,
-                            helperTab
-                        })
-                        sendCommandResp({
-                            success: false,
-                            error: 'Failed to open helper tab or capture tab id'
-                        })
-                    }
-                })
-                .catch((err) => {
-                    console.error('flix_startRecording failed', err)
+        case 'flix_startRecording': {
+            resolveAuthDataForRecording(msgObj, (authData) => {
+                if (!authData || !authData.token) {
+                    console.error('flix_startRecording: missing authData (log in via the app or extension)')
                     sendCommandResp({
                         success: false,
-                        error: err && err.message ? err.message : String(err)
+                        error: 'Not authenticated',
                     })
-                })
+                    return
+                }
+
+                const applyTabAndStart = (tab) => {
+                    if (!msgObj.demoData) {
+                        msgObj.demoData = {}
+                    }
+                    if (tab && tab.id) {
+                        flixVars.tabId = tab.id
+                        if (!msgObj.demoData.tabInfo) {
+                            msgObj.demoData.tabInfo = tab
+                        }
+                        if (!msgObj.demoData.demoTitle && tab.title) {
+                            msgObj.demoData.demoTitle = tab.title
+                        }
+                        if (!msgObj.demoData.name && tab.title) {
+                            msgObj.demoData.name = tab.title
+                        }
+                    }
+
+                    flixVars.IsAttached = true
+                    flixVars.authData = authData
+                    flixVars.demoData = msgObj.demoData
+                    flixVars.recording = true
+                    flixVars.type = 'FlixDemo'
+
+                    flix.startRecordingDemoFromBackground(flixVars)
+                        .then((helperTab) => {
+
+                            if (flixVars.tabId && helperTab && helperTab.id) {
+
+                                console.log('flixVars saved')
+                                console.log(flixVars)
+                                flixVars.helperTabId = helperTab.id
+
+                                chrome.storage.local.set(flixVars)
+                                    .then(() => {
+
+                                        sendCommandResp('Started recording')
+                                    })
+                            } else {
+                                console.error('flix_startRecording: missing tabId or helper tab', {
+                                    tabId: flixVars.tabId,
+                                    helperTab
+                                })
+                                sendCommandResp({
+                                    success: false,
+                                    error: 'Failed to open helper tab or capture tab id'
+                                })
+                            }
+                        })
+                        .catch((err) => {
+                            console.error('flix_startRecording failed', err)
+                            sendCommandResp({
+                                success: false,
+                                error: err && err.message ? err.message : String(err)
+                            })
+                        })
+                }
+
+                const tabFromSender = sendCommander && sendCommander.tab
+                if (tabFromSender && tabFromSender.id) {
+                    applyTabAndStart(tabFromSender)
+                } else {
+                    chrome.tabs.query({ active: true, lastFocusedWindow: true }, (tabs) => {
+                        applyTabAndStart(tabs && tabs[0])
+                    })
+                }
+            })
 
             break
+        }
 
 
         case 'flix_startAIRecording':
 
             console.log('Background - flix_startAIRecording message received')
 
-            flixVars.IsAttached = true
-            flixVars.authData = msgObj.authData
-            flixVars.demoData = msgObj.demoData
-            flixVars.recording = true
-            flixVars.type = 'AIDemo'
+            resolveAuthDataForRecording(msgObj, (authData) => {
+                if (!authData || !authData.token) {
+                    console.error('flix_startAIRecording: missing authData')
+                    sendCommandResp({
+                        success: false,
+                        error: 'Not authenticated',
+                    })
+                    return
+                }
 
-            /*
-               chrome.storage.local.set(flixVars, function () {
+                flixVars.IsAttached = true
+                flixVars.authData = authData
+                flixVars.demoData = msgObj.demoData
+                flixVars.recording = true
+                flixVars.type = 'AIDemo'
+
+                createAutoRecording(flixVars.demoData.windowMeasures, flixVars.demoData.workspaceId, flixVars.authData.token)
+                    .then((autoRecordingDoc) => {
+                        flixVars.autoRecordingId = autoRecordingDoc._id
+
+                        chrome.storage.local.set(flixVars, function () {
+
                             flix.startRecordingAIDemoFromBackground(flixVars)
                                 .then(() => {
                                     sendCommandResp('Started AI recording')
                                 })
                         })
-
-             */
-            createAutoRecording(flixVars.demoData.windowMeasures, flixVars.demoData.workspaceId, flixVars.authData.token)
-                .then((autoRecordingDoc) => {
-                    flixVars.autoRecordingId = autoRecordingDoc._id
-
-                    debugger
-                    chrome.storage.local.set(flixVars, function () {
-
-                        flix.startRecordingAIDemoFromBackground(flixVars)
-                            .then(() => {
-                                sendCommandResp('Started AI recording')
-                            })
                     })
-                })
+            })
 
 
             break
@@ -765,6 +814,24 @@ chrome.runtime.onMessageExternal.addListener(function (msgObj, sendCommander, se
     console.log(msgObj)
 
     switch (msgObj.type) {
+        case 'livedemo_extension_ping':
+            sendCommandResp({ installed: true })
+            break
+        case 'livedemo_extension_action_settings':
+            if (chrome.action && typeof chrome.action.getUserSettings === 'function') {
+                chrome.action.getUserSettings()
+                    .then((settings) => {
+                        sendCommandResp({
+                            isOnToolbar: typeof settings.isOnToolbar === 'boolean' ? settings.isOnToolbar : null,
+                        })
+                    })
+                    .catch(() => {
+                        sendCommandResp({ isOnToolbar: null })
+                    })
+            } else {
+                sendCommandResp({ isOnToolbar: null })
+            }
+            break
         case 'check_authenticate':
             console.log('bg- check_authenticate called')
             chrome.storage.local.get(['authData'])

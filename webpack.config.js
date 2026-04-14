@@ -46,6 +46,7 @@ var options = {
     contentScript: path.join(__dirname, 'src', 'pages', 'Content', 'index.js'),
     captureScript: path.join(__dirname, 'src', 'pages', 'Content', 'captureScript.js'),
     takeScreenshot: path.join(__dirname, 'src', 'pages', 'Content', 'takeScreenshot.js'),
+    takeManualRecording: path.join(__dirname, 'src', 'pages', 'Content', 'takeManualRecording.js'),
     takeVideo: path.join(__dirname, 'src', 'pages', 'Content', 'takeVideo.js'),
     flixHelpers: path.join(__dirname, 'src', 'pages', 'Content', 'flixHelpers.js'),
     autoRecordingHelpers: path.join(__dirname, 'src', 'pages', 'Content', 'autoRecordingHelpers.js'),
@@ -55,7 +56,7 @@ var options = {
     panel: path.join(__dirname, 'src', 'pages', 'Panel', 'index.jsx'),
   },
   chromeExtensionBoilerplate: {
-    notHotReload: ['background', 'contentScript', 'captureScript', 'takeScreenshot', 'takeVideo', 'devtools'],
+    notHotReload: ['background', 'contentScript', 'captureScript', 'takeScreenshot', 'takeManualRecording', 'takeVideo', 'devtools'],
   },
   output: {
     filename: '[name].bundle.js',

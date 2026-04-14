@@ -11,6 +11,19 @@
 
 }
 
+.App.App--column {
+  display: flex;
+  flex-direction: column;
+}
+
+.App .App-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: auto;
+}
+
 .App-logo {
   height: 30vmin;
   pointer-events: none;

@@ -380,8 +380,9 @@ const CreateNewFlixDemo = function (props) {
 
                         console.log('flix_startRecording windowMeasures')
                         console.log(localMeasures)
-                        chrome.runtime.sendMessage({
-                            type: 'flix_startRecording',
+
+                        chrome.tabs.sendMessage(activeTab.id, {
+                            type: 'takeManualRecording',
                             demoData: {
                                 workspaceId: currentSelectedWorkspace._id,
                                 name: newDemoName,
@@ -390,12 +391,11 @@ const CreateNewFlixDemo = function (props) {
                                 tabInfo: activeTab,
                                 windowMeasures: localMeasures
                             },
-                            authData: authData
-                        }, function (response) {
-
-                            console.log(response)
+                          }, function (response) {
+              
                             window.close()
-                        })
+                            console.log('capture message sent')
+                          })
 
                     })
                 })
@@ -449,7 +449,6 @@ const CreateNewFlixDemo = function (props) {
                         tabInfo: activeTab,
                         windowMeasures: localMeasures
                     },
-                    authData: authData
                 }, function (response) {
 
                     console.log(response)

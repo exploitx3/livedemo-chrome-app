@@ -14,6 +14,7 @@ import CreateNewDemo from './pages/CreateNewDemo/CreateNewDemo'
 import StoryPage from './pages/StoryPage/StoryPage'
 import DashboardPage from './pages/Dashboard/Dashboard'
 import { SwitchComponentIfAuth } from './components/HOCs/HOCs'
+import PinReminderFooter from './components/PinReminderFooter/PinReminderFooter'
 import { useRecoilState, useRecoilValue, useSetRecoilState } from 'recoil'
 import * as state from './state'
 import "antd/dist/antd.css"
@@ -106,7 +107,8 @@ console.log(previousLocation)
   console.log('previousLocation')
   console.log(previousLocation)
   return (
-    <div className="App">
+    <div className="App App--column">
+      <div className="App-body">
       {!alreadyNavigateToPreviousLocation && !(authData && authData.name) ? (
         <LoginPage/>
       ) : (
@@ -169,8 +171,8 @@ console.log(previousLocation)
 
         </Routes>
       )}
-
-
+      </div>
+      <PinReminderFooter />
     </div>
   );
 };
