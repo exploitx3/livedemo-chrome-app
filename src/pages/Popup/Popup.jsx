@@ -38,6 +38,7 @@ async function getTab() {
 const Popup = () => {
 
   let authData = useRecoilValue(state.authDataState)
+  const setAuthData = useSetRecoilState(state.authDataState)
   const [previousLocation, setPreviousLocation] = useRecoilState(state.previousLocationState)
   const [backLocation, setBackLocation] = useRecoilState(state.backLocationState)
   const [alreadyNavigateToPreviousLocation, setAlreadyNavigateToPreviousLocation] = useState(false)
@@ -50,6 +51,22 @@ const Popup = () => {
   useEffect(() => {
     console.log('checkContentScript called')
     checkContentScript()
+  }, [])
+
+  // Reactively sync authData from chrome.storage into Recoil state so that
+  // when the web app authenticates via the background (onMessageExternal), the
+  // popup updates without requiring a manual reload.
+  useEffect(() => {
+    function onStorageChanged(changes, areaName) {
+      if (areaName !== 'local') return
+      if (changes.authData && changes.authData.newValue) {
+        setAuthData(changes.authData.newValue)
+      }
+    }
+    chrome.storage.onChanged.addListener(onStorageChanged)
+    return () => {
+      chrome.storage.onChanged.removeListener(onStorageChanged)
+    }
   }, [])
 
   useEffect(() => {
