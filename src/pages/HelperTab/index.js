@@ -1,4 +1,19 @@
+const MAX_CAPTURE_WIDTH = 2560
+const MAX_CAPTURE_HEIGHT = 1440
+const RECORDING_FILE_NAME = 'recording.webm'
+
 function tabCapture(tabInfo) {
+  // Aim for 1440p (2560×1440): scale tab native size UP into that box when smaller
+  // (1080p displays used to stay 1080 because we only took css×dpr then clamped).
+  // Never exceed the ceiling.
+  const dpr = (tabInfo && tabInfo.devicePixelRatio) || window.devicePixelRatio || 1
+  const nativeW = Math.round(((tabInfo && tabInfo.width) || 1920) * dpr)
+  const nativeH = Math.round(((tabInfo && tabInfo.height) || 1080) * dpr)
+  const upscale = Math.min(MAX_CAPTURE_WIDTH / nativeW, MAX_CAPTURE_HEIGHT / nativeH)
+  const scale = Math.max(1, upscale)
+  const maxWidth = Math.min(Math.round(nativeW * scale), MAX_CAPTURE_WIDTH)
+  const maxHeight = Math.min(Math.round(nativeH * scale), MAX_CAPTURE_HEIGHT)
+
   return new Promise((resolve) => {
     chrome.tabCapture.capture(
       {
@@ -6,13 +21,10 @@ function tabCapture(tabInfo) {
         video: true,
         videoConstraints: {
           mandatory: {
-            // minWidth: tabInfo.width,
-            maxWidth: (tabInfo.width * window.devicePixelRatio) * 2,
-            // minHeight: tabInfo.height,
-            maxHeight: (tabInfo.height * window.devicePixelRatio) * 2,
+            maxWidth,
+            maxHeight,
             maxFrameRate: 60,
           }
-
         },
       },
       (stream) => {
@@ -28,65 +40,35 @@ var vars = {
   recorder: null,
 }
 
-function sendMessageToTab(tabId, data) {
-  return new Promise((resolve) => {
-    chrome.tabs.sendMessage(tabId, data, (res) => {
-      resolve(res)
-    })
-  })
+// OPFS keeps recorded chunks on disk instead of the JS heap, so memory stays
+// flat regardless of recording length.
+async function createRecordingWritable() {
+  const root = await navigator.storage.getDirectory()
+  try {
+    await root.removeEntry(RECORDING_FILE_NAME)
+  } catch (err) {
+    // no stale file to remove
+  }
+  const fileHandle = await root.getFileHandle(RECORDING_FILE_NAME, { create: true })
+  const writable = await fileHandle.createWritable()
+  return { fileHandle, writable }
 }
 
-async function startRecordingOld(option) {
-  const stream = await tabCapture()
-
-  if (stream) {
-    // call when the stream inactive
-    stream.oninactive = () => {
-      window.close()
-    }
-
-    const videoCache = []
-    // const context = new AudioContext();
-    // const mediaStream = context.createMediaStreamSource(stream);
-    const recorder = new MediaRecorder(stream, {
-      mimeType: 'video/webm;codecs=vp9',
-      audioBitsPerSecond: 0,
-    })
-
-    recorder.ondataavailable = async function (event) {
-      console.log(event)
-      console.log('data-available', event.data.size)
-
-      // await sendMessageToTab(option.currentTabId, {
-      //     type: "FROM_OPTION",
-      //     data: event.data.size,
-      //   });
-    }
-    // You can pass some data to current tab
-    // await sendMessageToTab(option.currentTabId, {
-    //   type: "FROM_OPTION",
-    //   data: audioDataArray.length,
-    // });
-
-
-    // Prevent page mute
-    // mediaStream.connect(recorder);
-    // recorder.connect(context.destination);
-    // mediaStream.connect(context.destination);
-  } else {
-    window.close()
+async function removeRecordingFile() {
+  try {
+    const root = await navigator.storage.getDirectory()
+    await root.removeEntry(RECORDING_FILE_NAME)
+  } catch (err) {
+    // already gone
   }
 }
 
-function compileRecording(videoBlobs) {
-  const blob = new Blob(videoBlobs, {
-    type: 'video/webm',
-  })
-
-  const url = URL.createObjectURL(blob)
-  console.log(`Generated recording at ${url}`)
-
-  return url
+async function cleanupRecordingArtifacts() {
+  if (vars.videoBlobsUrl) {
+    URL.revokeObjectURL(vars.videoBlobsUrl)
+    vars.videoBlobsUrl = ''
+  }
+  await removeRecordingFile()
 }
 
 function afterStopRecording(videoBlobsUrl, videoStartMs, videoEndMs) {
@@ -125,149 +107,96 @@ function afterStopRecordingVideo(videoBlobsUrl, videoStartMs, videoEndMs) {
 
 }
 
-async function startRecording(tabInfo) {
+async function startTabRecording(tabInfo, timesliceMs, onRecordingFinished) {
   const stream = await tabCapture(tabInfo)
 
-  if (stream) {
-    // call when the stream inactive
-    stream.oninactive = () => {
-      // window.close()
-    }
-
-    // Set up media recorder
-    const mediaConstraints = {
-      mimeType: 'video/webm;codecs=vp9',
-      audioBitsPerSecond: 0,
-      videoBitsPerSecond: 8000000
-    }
-    let currentRecorder = new MediaRecorder(stream, mediaConstraints)
-
-
-    // Record tab stream
-    let currentBlobs = []
-    currentRecorder.ondataavailable = event => {
-      console.log('data-available')
-      if (event.data && event.data.size > 0) {
-        currentBlobs?.push(event.data)
-      }
-    }
-
-    // When the recording is stopped
-    currentRecorder.onstop = () => {
-      vars.videoEndMs = Date.now()
-
-      let url = compileRecording(currentBlobs)
-      vars.videoBlobsUrl = url
-
-      afterStopRecording(url, vars.videoStartMs, vars.videoEndMs)
-        .then(() => {
-          // window.close()
-        })
-
-      // Stop stream(s)
-      stream.getTracks().forEach(function (track) {
-        track.stop()
-      })
-    }
-
-    // Stop recording if stream is ended when tab is closed
-    stream.getVideoTracks()[0].onended = () => {
-      currentRecorder?.stop()
-    }
-
-    debugger
-    currentRecorder.start(1500)
-    vars.videoStartMs = Date.now()
-
-    return currentRecorder
-
-  } else {
+  if (!stream) {
     window.close()
+    return null
   }
-}
 
-async function startRecordingVideo(tabInfo) {
-  const stream = await tabCapture(tabInfo)
-
-  if (stream) {
-    // call when the stream inactive
-    stream.oninactive = () => {
-      // window.close()
-    }
-
-    // Set up media recorder
-    const mediaConstraints = {
-      mimeType: 'video/webm;codecs=vp9',
-      audioBitsPerSecond: 0,
-      videoBitsPerSecond: 8000000,
-    }
-    let currentRecorder = new MediaRecorder(stream, mediaConstraints)
-
-
-    // Record tab stream
-    let currentBlobs = []
-    currentRecorder.ondataavailable = event => {
-      console.log('data-available')
-      if (event.data && event.data.size > 0) {
-        currentBlobs?.push(event.data)
-      }
-    }
-
-    // When the recording is stopped
-    currentRecorder.onstop = () => {
-      vars.videoEndMs = Date.now()
-
-      let url = compileRecording(currentBlobs)
-      vars.videoBlobsUrl = url
-
-      afterStopRecordingVideo(url, vars.videoStartMs, vars.videoEndMs)
-        .then(() => {
-          window.close()
-        })
-
-      // Stop stream(s)
-      stream.getTracks().forEach(function (track) {
-        track.stop()
-      })
-    }
-
-    // Stop recording if stream is ended when tab is closed
-    stream.getVideoTracks()[0].onended = () => {
-      currentRecorder?.stop()
-    }
-
-    currentRecorder.start(100)
-    vars.videoStartMs = Date.now()
-
-    return currentRecorder
-
-  } else {
-    window.close()
+  let opfs = null
+  try {
+    opfs = await createRecordingWritable()
+  } catch (err) {
+    console.log('OPFS unavailable, falling back to in-memory buffering', err)
   }
-}
 
+  let writeQueue = Promise.resolve()
+  const memoryChunks = []
 
-function sleep(ms = 0) {
-  return new Promise((resolve) => setTimeout(resolve, ms))
-}
+  const recorder = new MediaRecorder(stream, {
+    mimeType: 'video/webm;codecs=vp9',
+    audioBitsPerSecond: 0,
+    videoBitsPerSecond: 8000000,
+  })
 
-function waitForVar(varName, obj, time) {
+  recorder.ondataavailable = (event) => {
+    if (!event.data || event.data.size === 0) {
+      return
+    }
 
-  return new Promise((resolve) => {
-    if (obj[varName]) {
-
-      resolve(obj[varName])
+    if (opfs) {
+      // Writes must stay sequential; chain them.
+      writeQueue = writeQueue.then(() => opfs.writable.write(event.data))
     } else {
-
-      return new Promise((inRes, inRej) => {
-        setTimeout(() => {
-
-          resolve(waitForVar(varName, obj, time))
-
-        }, time)
-      })
+      memoryChunks.push(event.data)
     }
+  }
 
+  recorder.onstop = () => {
+    vars.videoEndMs = Date.now()
+
+    stream.getTracks().forEach(function (track) {
+      track.stop()
+    })
+
+    const finalize = opfs
+      ? writeQueue
+        .then(() => opfs.writable.close())
+        .then(() => opfs.fileHandle.getFile())
+      : Promise.resolve(new Blob(memoryChunks, { type: 'video/webm' }))
+
+    finalize
+      .then((fileOrBlob) => {
+        // File from OPFS is disk-backed, so this URL does not pin the video in memory.
+        const url = URL.createObjectURL(fileOrBlob)
+        vars.videoBlobsUrl = url
+
+        return onRecordingFinished(url, vars.videoStartMs, vars.videoEndMs)
+      })
+      .catch((err) => {
+        console.log('Failed to finalize recording', err)
+      })
+  }
+
+  // Stop recording if stream is ended when tab is closed
+  stream.getVideoTracks()[0].onended = () => {
+    if (recorder.state !== 'inactive') {
+      recorder.stop()
+    }
+  }
+
+  recorder.start(timesliceMs)
+  vars.videoStartMs = Date.now()
+
+  return recorder
+}
+
+function startRecording(tabInfo) {
+  return startTabRecording(tabInfo, 1500, (url, videoStartMs, videoEndMs) => {
+    return afterStopRecording(url, videoStartMs, videoEndMs)
+  })
+}
+
+function startRecordingVideo(tabInfo) {
+  return startTabRecording(tabInfo, 100, (url, videoStartMs, videoEndMs) => {
+    // Background fetches the blob URL before responding, so cleanup is safe here.
+    return afterStopRecordingVideo(url, videoStartMs, videoEndMs)
+      .then(() => cleanupRecordingArtifacts())
+      .then(() => {
+        window.close()
+      })
   })
 }
 
@@ -322,9 +251,11 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
       break
     case 'CLOSE_TAB':
-      window.close()
-
-      sendResponse({})
+      cleanupRecordingArtifacts()
+        .finally(() => {
+          sendResponse({})
+          window.close()
+        })
 
       break
     default:

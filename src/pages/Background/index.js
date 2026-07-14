@@ -402,11 +402,10 @@ chrome.runtime.onMessage.addListener(function (msgObj, sendCommander, sendComman
                 if (flixVars.tabId && helperTab.id) {
 
                     console.log('flixVars saved')
-                    console.log(flixVars)
                     flixVars.helperTabId = helperTab.id
                     flixVars.helperWindowId = window.id
 
-                    chrome.storage.local.set(flixVars)
+                    flix.persistLightFlixVars(flixVars)
                         .then(() => {
 
                             sendCommandResp('Started recording video')
@@ -537,10 +536,9 @@ chrome.runtime.onMessage.addListener(function (msgObj, sendCommander, sendComman
                             if (flixVars.tabId && helperTab && helperTab.id) {
 
                                 console.log('flixVars saved')
-                                console.log(flixVars)
                                 flixVars.helperTabId = helperTab.id
 
-                                chrome.storage.local.set(flixVars)
+                                flix.persistLightFlixVars(flixVars)
                                     .then(() => {
 
                                         sendCommandResp('Started recording')
@@ -603,7 +601,7 @@ chrome.runtime.onMessage.addListener(function (msgObj, sendCommander, sendComman
                     .then((autoRecordingDoc) => {
                         flixVars.autoRecordingId = autoRecordingDoc._id
 
-                        chrome.storage.local.set(flixVars, function () {
+                        flix.persistLightFlixVars(flixVars).then(function () {
 
                             flix.startRecordingAIDemoFromBackground(flixVars)
                                 .then(() => {
@@ -620,7 +618,6 @@ chrome.runtime.onMessage.addListener(function (msgObj, sendCommander, sendComman
         case 'helper_stopRecording':
 
             console.log('helper_stopRecording response')
-            console.log(msgObj)
 
 
             flixVars.videoBlobsUrl = msgObj.videoBlobsUrl
@@ -639,7 +636,6 @@ chrome.runtime.onMessage.addListener(function (msgObj, sendCommander, sendComman
                     })
                 })
                 .then((videoBlobs) => {
-                    console.log()
 
                     flixVars.videoBlobs = videoBlobs
 
@@ -647,9 +643,11 @@ chrome.runtime.onMessage.addListener(function (msgObj, sendCommander, sendComman
 
                 })
                 .then(({payloadDataUrl, newStoryId}) => {
-                    console.log(flixVars)
 
-                    chrome.tabs.remove(flixVars.helperTabId)
+                    // Helper tab may have already closed itself after CLOSE_TAB cleanup.
+                    chrome.tabs.remove(flixVars.helperTabId, () => {
+                        void chrome.runtime.lastError
+                    })
 
                     console.log(`newStoryDemo response - id - ${newStoryId}`)
 
@@ -740,7 +738,6 @@ chrome.runtime.onMessage.addListener(function (msgObj, sendCommander, sendComman
 
                     return flix.getBlobFromUrl(flixVars.videoBlobsUrl)
                         .then((videoBlobs) => {
-                            console.log(videoBlobs)
 
                             flixVars.videoBlobs = videoBlobs
 

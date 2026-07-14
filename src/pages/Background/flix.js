@@ -32,6 +32,31 @@ const millisecondsPerBlob = 100
 /** Survives flixVars ← storage merges (functions are not persisted). Used to remove the real listener on stop. */
 let activeRecordingMessageListener = null
 
+/**
+ * Heavy/in-memory-only fields that must never hit chrome.storage.local:
+ * screenshots and cursor arrays can be tens of MB and were being re-serialized
+ * on every cursor move, and storage.local is quota-capped (~10MB).
+ */
+const NON_PERSISTED_FLIX_KEYS = [
+    'screenshots',
+    'currentScreenshotDataUrl',
+    'cursorPositions',
+    'videoBlobs',
+    'videoBlobsUrl',
+    'videoStream',
+    'videoRecorder',
+    'messageListenerHandler',
+    'screenshotTimer',
+]
+
+function persistLightFlixVars(flixVars) {
+    const light = { ...flixVars }
+    NON_PERSISTED_FLIX_KEYS.forEach((key) => {
+        delete light[key]
+    })
+    return chrome.storage.local.set(light)
+}
+
 function registerRecordingMessageListener(flixVars, handler) {
     if (activeRecordingMessageListener) {
         chrome.runtime.onMessage.removeListener(activeRecordingMessageListener)
@@ -78,12 +103,7 @@ function resetVars(flixVars) {
     flixVars.currentScreenshotDataUrl = ''
     flixVars.screenshots = {}
 
-    return new Promise((resolve, reject) => {
-
-        return chrome.storage.local.set(flixVars, function () {
-            resolve()
-        })
-    })
+    return persistLightFlixVars(flixVars)
 
 }
 
@@ -249,10 +269,8 @@ async function onClick(flixVars, message, sender) {
         chrome.action.setBadgeBackgroundColor(
             { color: 'red' }
         )   
-        // let newSetObj = {}
-        // newSetObj["flixVars"] = flixVars
 
-        chrome.storage.local.set(flixVars)
+        persistLightFlixVars(flixVars)
 
         if (flixVars.type === 'AIDemo') {
             debugger
@@ -306,13 +324,10 @@ function flix_stopRecording(flixVars, flixVarsGlobal, sendCommandResp) {
             flixVars.IsAttached = false
 
             console.log('stopRecording')
-            console.log('storage.flixVars:')
-            console.log(storage)
 
-            console.log('flixVars:')
-            console.log(flixVars)
-
-            flixVars = { ...storage }
+            // Heavy fields (screenshots, cursorPositions) live only in memory now,
+            // so merge storage over the in-memory vars instead of replacing them.
+            flixVars = { ...flixVars, ...storage }
 
             chrome.action.setBadgeText({ text: '' });
 
@@ -446,9 +461,9 @@ function onInterestingEvent(flixVars, message, sender) {
         if (!Array.isArray(flixVars.cursorPositions)) {
             flixVars.cursorPositions = []
         }
+        // In-memory only: persisting on every mousemove serialized the whole
+        // flixVars object (screenshots included) many times per second.
         flixVars.cursorPositions.push(point)
-
-        chrome.storage.local.set(flixVars)
         return
     }
 
@@ -479,7 +494,7 @@ function onInterestingEvent(flixVars, message, sender) {
         flixVars.capturedEvents.push(event)
         flixVars.lastDemoEvent = event
 
-        chrome.storage.local.set(flixVars)
+        persistLightFlixVars(flixVars)
 
     }
 }
@@ -634,84 +649,50 @@ function saveScreenshot(flixVars, clickId, dataUrl) {
 }
 
 
-function addColorMetadataForVP9(inputBlob) {
+/**
+ * Single-pass replacement for the old addColorMetadataForVP9 + getSeekableBlob
+ * chain: one ArrayBuffer read, one decode, one output Blob. Inserts the VP9
+ * Colour tag into the parsed metadata, then rebuilds it as seekable metadata
+ * (Duration + SeekHead + Cues) in the same operation.
+ */
+async function finalizeWebmBlob(inputBlob) {
+    const buffer = await inputBlob.arrayBuffer()
 
-    return new Promise(resolve => {
-        const reader = new EBML.Reader()
-        const decoder = new EBML.Decoder()
-        const encoder = new EBML.Encoder()
-        const tools = EBML.tools
+    const reader = new EBML.Reader()
+    const decoder = new EBML.Decoder()
+    const tools = EBML.tools
 
-        const fileReader = new FileReader()
-        fileReader.onload = () => {
-            if (!(fileReader.result instanceof ArrayBuffer)) return
-
-            const metadata = decoder.decode(fileReader.result)
-            metadata.forEach(element => {
-                reader.read(element)
-            })
-            reader.stop()
-
-            const newMetadata = metadata.slice()
-            tools.insertTag(newMetadata, 'Video', [
-                { name: 'Colour', type: 'm', isEnd: false },
-                {
-                    name: 'TransferCharacteristics',
-                    type: 'u',
-                    data: tools.createUIntBuffer(1),
-                },
-                {
-                    name: 'MatrixCoefficients',
-                    type: 'u',
-                    data: tools.createUIntBuffer(1),
-                },
-                { name: 'Primaries', type: 'u', data: tools.createUIntBuffer(1) },
-                { name: 'Range', type: 'u', data: tools.createUIntBuffer(1) },
-                { name: 'Colour', type: 'm', isEnd: true },
-            ])
-
-            // log('new metadata', newMetadata, getHumanReadableMetadataTree(newMetadata))
-            const newMetadataBuffer = encoder.encode(newMetadata)
-            const body = fileReader.result.slice(reader.metadataSize)
-            const newBlob = new Blob([newMetadataBuffer, body], {
-                type: 'video/webm',
-            })
-            resolve(newBlob)
-        }
-        fileReader.readAsArrayBuffer(inputBlob)
+    decoder.decode(buffer).forEach(element => {
+        reader.read(element)
     })
-}
+    reader.stop()
 
-function getSeekableBlob(inputBlob) {
+    tools.insertTag(reader.metadatas, 'Video', [
+        { name: 'Colour', type: 'm', isEnd: false },
+        {
+            name: 'TransferCharacteristics',
+            type: 'u',
+            data: tools.createUIntBuffer(1),
+        },
+        {
+            name: 'MatrixCoefficients',
+            type: 'u',
+            data: tools.createUIntBuffer(1),
+        },
+        { name: 'Primaries', type: 'u', data: tools.createUIntBuffer(1) },
+        { name: 'Range', type: 'u', data: tools.createUIntBuffer(1) },
+        { name: 'Colour', type: 'm', isEnd: true },
+    ])
 
-    return new Promise(resolve => {
-        const reader = new EBML.Reader()
-        const decoder = new EBML.Decoder()
-        const tools = EBML.tools
+    const newMetadataBuffer = tools.makeMetadataSeekable(
+        reader.metadatas,
+        reader.duration,
+        reader.cues
+    )
 
-        const fileReader = new FileReader()
-        fileReader.onload = function () {
-            if (!(fileReader.result instanceof ArrayBuffer)) return
-
-            const ebmlElms = decoder.decode(fileReader.result)
-            ebmlElms.forEach(function (element) {
-                reader.read(element)
-            })
-            reader.stop()
-
-            const newMetadataBuffer = tools.makeMetadataSeekable(
-                reader.metadatas,
-                reader.duration,
-                reader.cues
-            )
-
-            const body = fileReader.result.slice(reader.metadataSize)
-            const newBlob = new Blob([newMetadataBuffer, body], {
-                type: 'video/webm',
-            })
-            resolve(newBlob)
-        }
-        fileReader.readAsArrayBuffer(inputBlob)
+    const body = buffer.slice(reader.metadataSize)
+    return new Blob([newMetadataBuffer, body], {
+        type: 'video/webm',
     })
 }
 
@@ -773,18 +754,9 @@ function blobToBase64(blob) {
 
 async function uploadVideo(videoBlob, workspaceId, flixVars) {
 
-    // console.log(flixVars)
-
-
-    // const videoBlob = new Blob(flixVars.videoBlobs, { type: 'video/webm' })
-
-    const videoBlobWithMetadata = await getSeekableBlob(
-        await addColorMetadataForVP9(videoBlob)
-    )
+    const videoBlobWithMetadata = await finalizeWebmBlob(videoBlob)
 
     const videoBase64 = await blobToBase64(videoBlobWithMetadata)
-    // console.log('videoBase64 converted')
-
 
     const payload = {
         base64Video: videoBase64,
@@ -793,8 +765,6 @@ async function uploadVideo(videoBlob, workspaceId, flixVars) {
     if (flixVars.demoData && flixVars.demoData.storyId) {
         payload.storyId = flixVars.demoData.storyId
     }
-
-    console.log(JSON.stringify(payload, null, 2))
 
     return await fetch(`${ENV.STORIES_API}/workspaces/${workspaceId}/library/uploadVideo`, {
         method: 'POST',
@@ -809,6 +779,9 @@ async function uploadVideo(videoBlob, workspaceId, flixVars) {
             return res.json()
         })
         .then((data) => {
+            // Release references to the video copies as soon as upload finishes.
+            flixVars.videoBlobs = null
+            flixVars.videoBlobsUrl = ''
             clearCursorPositions(flixVars)
             return data
         })
@@ -830,23 +803,19 @@ async function afterRecordingVideo(flixVars) {
 
     console.log('took final screenshot')
 
-    // const videoBlob = new Blob(flixVars.videoBlobs, { type: 'video/webm' })
     const videoBlob = flixVars.videoBlobs
 
-    const videoBlobWithMetadata = await getSeekableBlob(
-        await addColorMetadataForVP9(videoBlob)
-    )
-    // const videoBlobUrl = URL.createObjectURL(videoBlobWithMetadata)
-
-    // const screenshots = await resolveAllScreenshotFields(
-    //   flixVars.screenshots
-    // )
+    const videoBlobWithMetadata = await finalizeWebmBlob(videoBlob)
 
     const screenshots = flixVars.screenshots
 
 
     const videoBase64 = await blobToBase64(videoBlobWithMetadata)
     console.log('videoBase64 converted')
+
+    // Release the raw video copies; only videoBase64 is needed from here on.
+    flixVars.videoBlobs = null
+    flixVars.videoBlobsUrl = ''
 
 
     return await fetch(`${ENV.STORIES_API}/inProgressStory`, {
@@ -883,8 +852,6 @@ async function afterRecordingVideo(flixVars) {
                 videoEndMs: flixVars.videoEndMs,
                 aspectRatio: flixVars.aspectRatio,
             }
-
-            console.log(JSON.stringify(payload, null, 2))
 
             let payloadDataUrl = createDataUrl(payload)
 
@@ -1281,6 +1248,7 @@ function stopRecordingDemoFromBackground(flixVars, storage) {
 
 export {
     getBlobFromUrl,
+    persistLightFlixVars,
     startRecordingVideoFromBackground,
     uploadVideo,
     resetVars,
