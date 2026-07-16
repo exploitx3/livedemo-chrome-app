@@ -93,6 +93,22 @@ chrome.runtime.onInstalled.addListener(function (event) {
 
 })
 
+function clearRecordingFlag(flixVarsRef) {
+    if (flixVarsRef) {
+        flixVarsRef.recording = false
+    }
+    return chrome.storage.local.set({ recording: false })
+}
+
+// Helper tab closed mid-record → hard clear so new tabs do not resume listeners
+chrome.tabs.onRemoved.addListener(function (tabId) {
+    if (flixVars.helperTabId && tabId === flixVars.helperTabId) {
+        console.log('helper tab removed — clear recording flag')
+        flixVars.helperTabId = 0
+        clearRecordingFlag(flixVars)
+    }
+})
+
 chrome.storage.onChanged.addListener(function (changes, areaName) {
     console.log('storage.onChanged ')
     console.log('changes')
@@ -418,7 +434,7 @@ chrome.runtime.onMessage.addListener(function (msgObj, sendCommander, sendComman
 
     }
 
-    if (msgObj.type === 'flix_stopRecording') {
+    if (msgObj.type === 'flix_stopRecording' || msgObj.type === 'stopRecording') {
 
         console.log('flix_stopRecording')
         console.log(flixVars)
@@ -619,6 +635,8 @@ chrome.runtime.onMessage.addListener(function (msgObj, sendCommander, sendComman
 
             console.log('helper_stopRecording response')
 
+            // Hard-clear before async upload/open — resume must not false-positive
+            clearRecordingFlag(flixVars)
 
             flixVars.videoBlobsUrl = msgObj.videoBlobsUrl
             flixVars.videoStartMs = msgObj.videoStartMs
@@ -704,6 +722,7 @@ chrome.runtime.onMessage.addListener(function (msgObj, sendCommander, sendComman
                 })
                 .catch(function (error) {
                     console.log('Request failed', error)
+                    clearRecordingFlag(flixVars)
 
                     // chrome.runtime.reload()
                     throw error
@@ -718,11 +737,13 @@ chrome.runtime.onMessage.addListener(function (msgObj, sendCommander, sendComman
             console.log(msgObj)
             chrome.action.setIcon({path: 'logo-recording-128.png'})
 
+            // Hard-clear before async upload so resume path cannot false-positive
             // MV3: the service worker may have restarted; in-memory flixVars loses demoData/authData.
             // Recording start persists those via chrome.storage.local — merge before upload.
-            chrome.storage.local.get(null)
+            clearRecordingFlag(flixVars)
+                .then(() => chrome.storage.local.get(null))
                 .then((storage) => {
-                    flixVars = {...flixVarsGlobal, ...storage}
+                    flixVars = {...flixVarsGlobal, ...storage, recording: false}
                     flixVars.videoBlobsUrl = msgObj.videoBlobsUrl
                     flixVars.videoStartMs = msgObj.videoStartMs
                     flixVars.videoEndMs = msgObj.videoEndMs
@@ -763,7 +784,8 @@ chrome.runtime.onMessage.addListener(function (msgObj, sendCommander, sendComman
                 .catch(function (error) {
                     console.log('Request failed', error)
                     chrome.action.setIcon({path: 'logo-128.png'})
-                    chrome.storage.local.set({ recording: false, IsAttached: false })
+                    clearRecordingFlag(flixVars)
+                    chrome.storage.local.set({ IsAttached: false })
 
                     // chrome.runtime.reload()
 

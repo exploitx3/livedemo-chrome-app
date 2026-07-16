@@ -298,14 +298,17 @@ async function onClick(flixVars, message, sender) {
 }
 
 function flix_stopRecording(flixVars, flixVarsGlobal, sendCommandResp) {
-    return chrome.storage.local.set({ IsAttached: false })
-        .then(() => {
-
-            return chrome.storage.local.get(null)
-        })
+    // Snapshot then hard-clear so resume path cannot false-positive if later steps fail
+    return chrome.storage.local.get(null)
         .then((storage) => {
+            const wasRecording = !!storage.recording
             const stopType = storage.type ?? flixVars.type
-            if (!storage.recording && stopType !== 'FlixDemo' && stopType !== 'Video') {
+            flixVars.recording = false
+            return chrome.storage.local.set({ IsAttached: false, recording: false })
+                .then(() => ({ storage, wasRecording, stopType }))
+        })
+        .then(({ storage, wasRecording, stopType }) => {
+            if (!wasRecording && stopType !== 'FlixDemo' && stopType !== 'Video') {
 
                 chrome.runtime.sendMessage({
                     name: 'popup_recordingCompleted',
@@ -327,7 +330,7 @@ function flix_stopRecording(flixVars, flixVarsGlobal, sendCommandResp) {
 
             // Heavy fields (screenshots, cursorPositions) live only in memory now,
             // so merge storage over the in-memory vars instead of replacing them.
-            flixVars = { ...flixVars, ...storage }
+            flixVars = { ...flixVars, ...storage, recording: false }
 
             chrome.action.setBadgeText({ text: '' });
 
@@ -344,7 +347,10 @@ function flix_stopRecording(flixVars, flixVarsGlobal, sendCommandResp) {
                     })
                     .catch((err) => {
                         console.error('flix_stopRecording Flix/Video', err)
-                        sendCommandResp({ success: false, error: err && err.message ? err.message : String(err) })
+                        flixVars.recording = false
+                        return chrome.storage.local.set({ recording: false }).then(() => {
+                            sendCommandResp({ success: false, error: err && err.message ? err.message : String(err) })
+                        })
                     })
             } else if (recordType === 'AIDemo') {
 
@@ -361,7 +367,10 @@ function flix_stopRecording(flixVars, flixVarsGlobal, sendCommandResp) {
                     })
                     .catch((err) => {
                         console.error('flix_stopRecording AIDemo', err)
-                        sendCommandResp({ success: false, error: err && err.message ? err.message : String(err) })
+                        flixVars.recording = false
+                        return chrome.storage.local.set({ recording: false }).then(() => {
+                            sendCommandResp({ success: false, error: err && err.message ? err.message : String(err) })
+                        })
                     })
 
             } else {
@@ -1236,10 +1245,18 @@ function stopRecordingDemoFromBackground(flixVars, storage) {
             //   text: '',
             // })
 
+            flixVars.recording = false
             return chrome.storage.local.set({ recording: false })
                 .then(() => {
                     return stop(flixVars, storage)
 
+                })
+                .catch((error) => {
+                    // Ensure flag stays false even if stop() fails mid-flight
+                    flixVars.recording = false
+                    return chrome.storage.local.set({ recording: false }).then(() => {
+                        throw error
+                    })
                 })
 
         })
