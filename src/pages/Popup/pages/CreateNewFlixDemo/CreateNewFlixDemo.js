@@ -48,6 +48,39 @@ const CreateNewFlixDemo = function (props) {
 
     const [isSaving, setIsSaving] = useState(false)
     const [isLoading, setIsLoading] = useState(false)
+    // Default new demo path: DOM / html_delta recording
+    const [demoMode, setDemoMode] = useState('dom')
+
+    const DEMO_MODE_OPTIONS = [
+        { value: 'dom', label: 'HTML Demo', actionLabel: 'Start recording' },
+        { value: 'manual', label: 'Screenshots + Video Recording', actionLabel: 'Start recording' },
+        { value: 'ai', label: 'AI Recording', actionLabel: 'Start recording' },
+        { value: 'blank', label: 'Blank Demo', actionLabel: 'Create blank' },
+    ]
+
+    function startSelectedDemo() {
+        if (demoMode === 'dom') {
+            return startDomDeltaRecording()
+        }
+        if (demoMode === 'ai') {
+            return startAIRecording()
+        }
+        if (demoMode === 'manual') {
+            return startRecording()
+        }
+        if (demoMode === 'blank') {
+            return createBlankDemo(newDemoName, currentSelectedWorkspace._id, authData.token)
+                .then((newDemo) => {
+                    window.open(
+                        `${ENV.SERVER_URL}/workspace/${currentSelectedWorkspace._id}/storydemo/${newDemo._id}`,
+                        '_blank'
+                    )
+                })
+        }
+        return null
+    }
+
+    const selectedMode = DEMO_MODE_OPTIONS.find((o) => o.value === demoMode) || DEMO_MODE_OPTIONS[0]
 
     if (!newDemoName) {
         setNewDemoName('')
@@ -117,12 +150,13 @@ const CreateNewFlixDemo = function (props) {
                     console.log('popup_recordingCompleted:')
                     console.log(request)
 
-                    if (request.storyDemo) {
-                        setNewDemoName('')
-                        setIsNameChosen(false)
-
-                        setIsSaving(false)
-                    }
+                    // DOM stop from page pill never ran popup stopRecording(), so
+                    // clear Recoil here or the next open still thinks we're recording.
+                    setIsRecording(false)
+                    setNewDemoName('')
+                    setIsNameChosen(false)
+                    setIsSaving(false)
+                    chrome.action.setIcon({ path: 'logo-128.png' })
 
                 }
 
@@ -173,57 +207,40 @@ const CreateNewFlixDemo = function (props) {
     }, [])
 
     useEffect(() => {
-
-
-        if (isRecording) {
-
-            stopRecording()
-        } else {
-
-            setIsNameChosen(false)
-            chrome.action.setIcon({ path: 'logo-128.png' })
-
-
-            getTab()
-                .then((activeTab) => {
-
-                    return getWindowMeasures(activeTab.id)
-                        .then((measures) => {
-                            setWindowMeasures(measures)
-
-                            return activeTab
-                        })
-                })
-                .then((activeTab) => {
-
-
-                    console.log('livedemo title set')
-                    console.log(activeTab.title)
-                    setNewDemoName(activeTab.title)
-                })
-        }
-
-        // untillNotNull(checkRecording, 5)
+        // Trust background session over Recoil — DOM stop-from-pill used to leave
+        // isRecording=true in localStorage even after preview opened.
         checkRecording()
             .then((isRecordingBg) => {
+                const recording = !!isRecordingBg
+                console.log('isRecording - ', recording)
+                setIsRecording(recording)
 
-                console.log('isRecording - ')
-                console.log(isRecordingBg)
-
-                if (isRecordingBg !== null) {
-
-                    setIsRecording(isRecordingBg)
+                if (recording) {
+                    stopRecording()
+                    return
                 }
 
-                // If it is recording immediately stop recording and save livedemo
-                setIsRecording(isRecordingBg)
-            })
+                setIsNameChosen(false)
+                chrome.action.setIcon({ path: 'logo-128.png' })
 
+                return getTab()
+                    .then((activeTab) => {
+                        return getWindowMeasures(activeTab.id)
+                            .then((measures) => {
+                                setWindowMeasures(measures)
+                                return activeTab
+                            })
+                    })
+                    .then((activeTab) => {
+                        console.log('livedemo title set')
+                        console.log(activeTab.title)
+                        setNewDemoName(activeTab.title)
+                    })
+            })
 
         return () => {
             setIsNameChosen(false)
             setNewDemoName('')
-
         }
     }, [])
 
@@ -274,16 +291,26 @@ const CreateNewFlixDemo = function (props) {
 
 
             chrome.runtime.sendMessage({
-                type: 'flixCheckRecording',
-            }, function (response) {
+                type: 'domDelta_checkRecording',
+            }, function (deltaResponse) {
 
-                let err = chrome.runtime.lastError
-                if (err) {
-                    console.log(err.message)
+                if (deltaResponse && deltaResponse.IsAttached) {
+                    resolve(true)
+                    return
                 }
 
-                console.log('flixCheckRecording ' + JSON.stringify(response))
-                resolve(response && response.IsAttached)
+                chrome.runtime.sendMessage({
+                    type: 'flixCheckRecording',
+                }, function (response) {
+
+                    let err = chrome.runtime.lastError
+                    if (err) {
+                        console.log(err.message)
+                    }
+
+                    console.log('flixCheckRecording ' + JSON.stringify(response))
+                    resolve(response && response.IsAttached)
+                })
             })
         })
 
@@ -461,6 +488,44 @@ const CreateNewFlixDemo = function (props) {
     }
 
 
+    async function startDomDeltaRecording() {
+        setIsNameChosen(true)
+
+        chrome.action.setIcon({ path: 'logo-recording-128.png' })
+        setIsRecording(true)
+
+        return getTab()
+            .then((activeTab) => {
+
+                return getWindowMeasures(activeTab.id)
+                    .then((measures) => {
+                        setWindowMeasures(measures)
+
+                        return { measures, activeTab }
+                    })
+            })
+            .then(({ measures, activeTab }) => {
+                let localMeasures = measures ? measures : (windowMeasures ? windowMeasures : {})
+
+                chrome.runtime.sendMessage({
+                    type: 'domDelta_startRecording',
+                    authData: authData,
+                    demoData: {
+                        workspaceId: currentSelectedWorkspace._id,
+                        name: newDemoName,
+                        demoTitle: newDemoName || activeTab.title,
+                        tabInfo: activeTab,
+                        windowMeasures: localMeasures
+                    },
+                }, function (response) {
+
+                    console.log(response)
+                    window.close()
+                })
+            })
+    }
+
+
     function stopRecording() {
 
         setIsSaving(true)
@@ -473,34 +538,52 @@ const CreateNewFlixDemo = function (props) {
 
         return new Promise((resolve, reject) => {
 
-            chrome.runtime.sendMessage({
-                type: 'flix_stopRecording',
-                demoData: {
-                    workspaceId: currentSelectedWorkspace._id,
-                    sessionRecordingId: sessionRecordingId,
-                    name: newDemoName,
-                },
-                authData: authData,
-            }, (res) => {
+            // Prefer DOM-delta stop when that session is active
+            chrome.runtime.sendMessage({ type: 'domDelta_checkRecording' }, (deltaCheck) => {
+                if (deltaCheck && deltaCheck.IsAttached) {
+                    chrome.runtime.sendMessage({
+                        type: 'domDelta_stopRecording',
+                        authData: authData,
+                    }, (res) => {
+                        setTimeout(() => {
+                            setNewDemoName('')
+                            setIsNameChosen(false)
+                            setIsSaving(false)
+                            resolve(res)
+                        }, 2000)
+                    })
+                    return
+                }
 
-                // setTimeout(() => {
-                //   navigate('/dashboard')
-                // }, 3000)
+                chrome.runtime.sendMessage({
+                    type: 'flix_stopRecording',
+                    demoData: {
+                        workspaceId: currentSelectedWorkspace._id,
+                        sessionRecordingId: sessionRecordingId,
+                        name: newDemoName,
+                    },
+                    authData: authData,
+                }, (res) => {
 
-                // let newStoryDemo = res.storyDemo
-                setTimeout(() => {
+                    // setTimeout(() => {
+                    //   navigate('/dashboard')
+                    // }, 3000)
 
-                    setNewDemoName('')
-                    setIsNameChosen(false)
+                    // let newStoryDemo = res.storyDemo
+                    setTimeout(() => {
 
-                    setIsSaving(false)
-                    // console.log('shortId final ' + demoShortId)
-                    // window.open(`${ENV.SERVER_URL}/livedemos/${demoShortId}`, '_blank')
+                        setNewDemoName('')
+                        setIsNameChosen(false)
 
-                    resolve(res)
+                        setIsSaving(false)
+                        // console.log('shortId final ' + demoShortId)
+                        // window.open(`${ENV.SERVER_URL}/livedemos/${demoShortId}`, '_blank')
 
-                }, 35000)
+                        resolve(res)
 
+                    }, 35000)
+
+                })
             })
 
         })
@@ -519,89 +602,56 @@ const CreateNewFlixDemo = function (props) {
             <C.Wrapper>
                 <Header />
                 <C.MainContainer>
-                    <C.StyledInput
-                        name={'name-input'}
-                        size="large"
-                        autoFocus
-                        disabled={isNameChosen}
-                        placeholder="Untitled"
-                        value={newDemoName}
-                        onChange={(event) => {
-
-                            setNewDemoName(event.target.value)
-                        }}
-                        onPressEnter={(e) => {
-                            startRecording()
-                        }}
-                    />
                     {isSaving || isLoading ? (
                         <Spinner />
                     ) : (
                         <C.ButtonsWrapper>
-
-
-                            {!isRecording ? (<IconTextButton
-                                onClick={() => {
-                                    return startAIRecording()
-                                }}
-                                img={<C.StartRecordingIcon />}
-                                text={'AI Recording'}
-                                buttonStyles={{
-                                    justifyContent: 'flex-start',
-                                    boxShadow: 'none',
-                                    border: 'none',
-                                    '&:hover': {
-                                        border: 'none',
-                                        color: 'green',
-                                        cursor: 'pointer'
-                                    },
-                                    width: '100%;', fontSize: '1.2em'
-                                }}
-                            />) : ''}
-                            {!isRecording ? (<IconTextButton
-                                onClick={() => {
-                                    return startRecording()
-                                }}
-                                img={<C.StartRecordingIcon />}
-                                text={'Manual Recording'}
-                                buttonStyles={{
-                                    justifyContent: 'flex-start',
-                                    boxShadow: 'none',
-                                    border: 'none',
-                                    '&:hover': {
-                                        border: 'none',
-                                        color: 'green',
-                                        cursor: 'pointer'
-                                    },
-                                    width: '100%;', fontSize: '1.2em'
-                                }}
-                            />) : ''}
-                            <IconTextButton
-                                onClick={() => {
-
-                                    return createBlankDemo(newDemoName, currentSelectedWorkspace._id, authData.token)
-                                        .then((newDemo) => {
-
-                                            debugger
-                                            window.open(`${ENV.SERVER_URL}/workspace/${currentSelectedWorkspace._id}/storydemo/${newDemo._id}`, '_blank')
-
-                                            // navigate(`/story/${newDemo._id}`)
-                                        })
-                                }}
-                                img={<C.PlusIcon />}
-                                text={'Create Blank'}
-                                buttonStyles={{
-                                    justifyContent: 'flex-start',
-                                    boxShadow: 'none',
-                                    border: 'none',
-                                    '&:hover': {
-                                        border: 'none',
-                                        color: 'green',
-                                        cursor: 'pointer'
-                                    },
-                                    width: '100%', fontSize: '1.2em'
-                                }}
-                            />
+                            <C.ModeBlock>
+                                <C.ModeLabel htmlFor="demo-name-input">Name</C.ModeLabel>
+                                <C.StyledInput
+                                    id="demo-name-input"
+                                    name="name-input"
+                                    autoFocus
+                                    disabled={isNameChosen}
+                                    placeholder="Untitled"
+                                    value={newDemoName}
+                                    onChange={(event) => {
+                                        setNewDemoName(event.target.value)
+                                    }}
+                                    onPressEnter={() => {
+                                        if (!isRecording) {
+                                            startSelectedDemo()
+                                        }
+                                    }}
+                                />
+                            </C.ModeBlock>
+                            {!isRecording ? (
+                                <C.ModeBlock>
+                                    <C.ModeLabel htmlFor="demo-mode-select">Type</C.ModeLabel>
+                                    <C.ModeSelect
+                                        id="demo-mode-select"
+                                        value={demoMode}
+                                        onChange={(e) => setDemoMode(e.target.value)}
+                                    >
+                                        {DEMO_MODE_OPTIONS.map((opt) => (
+                                            <option key={opt.value} value={opt.value}>
+                                                {opt.label}
+                                            </option>
+                                        ))}
+                                    </C.ModeSelect>
+                                    <C.PrimaryAction
+                                        type="button"
+                                        onClick={() => startSelectedDemo()}
+                                    >
+                                        {demoMode === 'blank' ? (
+                                            <C.PlusIcon />
+                                        ) : (
+                                            <C.StartRecordingIcon />
+                                        )}
+                                        <span>{selectedMode.actionLabel}</span>
+                                    </C.PrimaryAction>
+                                </C.ModeBlock>
+                            ) : null}
                         </C.ButtonsWrapper>
                     )
                     }
@@ -702,10 +752,80 @@ const C = {
     `,
     ButtonsWrapper: styled.div`
         display: flex;
-        height: 40%;
-        justify-content: space-evenly;
-        align-items: center;
+        width: 100%;
+        flex-grow: 1;
+        justify-content: flex-start;
+        align-items: stretch;
         flex-direction: column;
+        gap: 16px;
+        padding-top: 20px;
+        box-sizing: border-box;
+    `,
+    ModeBlock: styled.div`
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        width: 100%;
+    `,
+    ModeLabel: styled.label`
+        font-size: 12px;
+        font-weight: 500;
+        color: ${Colors.secondaryText};
+        font-family: ${Colors.fontFamily};
+        text-align: left;
+    `,
+    ModeSelect: styled.select`
+        width: 100%;
+        height: 36px;
+        padding: 0 10px;
+        box-sizing: border-box;
+        border: 1px solid ${Colors.fourthColor};
+        border-radius: 4px;
+        background: #fff;
+        color: ${Colors.primaryText};
+        font-size: 14px;
+        font-family: ${Colors.fontFamily};
+        outline: none;
+        cursor: pointer;
+
+        &:focus {
+            border-color: ${Colors.primaryColor};
+        }
+    `,
+    PrimaryAction: styled.button`
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+        width: 100%;
+        height: 40px;
+        margin-top: 4px;
+        border: none;
+        border-radius: 4px;
+        background: ${Colors.primaryColor};
+        color: #fff;
+        font-size: 14px;
+        font-weight: 600;
+        font-family: ${Colors.fontFamily};
+        cursor: pointer;
+
+        &:hover {
+            background: ${Colors.primaryColorDarker};
+        }
+
+        && .anticon {
+            width: 18px;
+            height: 18px;
+            line-height: 1;
+            display: inline-flex;
+        }
+
+        && .anticon svg {
+            width: 100%;
+            height: 100%;
+            fill: #fff;
+            color: #fff;
+        }
     `,
     LogoContainer: styled.div`
         display: flex;
@@ -804,30 +924,40 @@ const C = {
         &&.anticon svg {
             width: 100%;
             height: 100%;
-
-            fill: green;
+            fill: currentColor;
         }
     `,
     StyledInput: styled(Input)`
-        height: 50px;
-        font-size: 1.15em;
-        box-sizing: border-box;
-        border-radius: 4px;
-        padding: 14px 16px;
-        width: 191px;
-        margin: 60px 0px 30px 0px;
-
-        border: 1px solid #8d9599;
+        && {
+            width: 100%;
+            height: 36px;
+            margin: 0;
+            padding: 0 10px;
+            box-sizing: border-box;
+            border: 1px solid ${Colors.fourthColor};
+            border-radius: 4px;
+            background: #fff;
+            color: ${Colors.primaryText};
+            font-size: 14px;
+            font-family: ${Colors.fontFamily};
+            box-shadow: none;
+        }
 
         &&:hover {
-            border: 1px solid ${Colors.primaryColor};
+            border-color: ${Colors.primaryColor};
         }
 
-        &&:focus-visible {
-            outline: none;
-            border: 2px solid ${Colors.primaryColor};
+        &&:focus,
+        &&.ant-input:focus,
+        &&.ant-input-focused {
+            border-color: ${Colors.primaryColor};
+            box-shadow: none;
         }
 
+        &&:disabled {
+            color: ${Colors.secondaryText};
+            background: #fafafa;
+        }
     `,
     DashboardIcon: styled(BarsOutlined)`
         line-height: 50px;
@@ -859,8 +989,7 @@ const C = {
         &&.anticon svg {
             width: 100%;
             height: 100%;
-
-            fill: green;
+            fill: currentColor;
         }
     `
 }

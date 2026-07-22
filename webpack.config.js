@@ -50,13 +50,14 @@ var options = {
     takeVideo: path.join(__dirname, 'src', 'pages', 'Content', 'takeVideo.js'),
     flixHelpers: path.join(__dirname, 'src', 'pages', 'Content', 'flixHelpers.js'),
     autoRecordingHelpers: path.join(__dirname, 'src', 'pages', 'Content', 'autoRecordingHelpers.js'),
+    domDeltaRecorder: path.join(__dirname, 'src', 'pages', 'Content', 'domDeltaRecorder.js'),
     // topScript: path.join(__dirname, 'src', 'pages', 'Content', 'topScript.js'),
     // frameScript: path.join(__dirname, 'src', 'pages', 'Content', 'frameScript.js'),
     devtools: path.join(__dirname, 'src', 'pages', 'Devtools', 'index.js'),
     panel: path.join(__dirname, 'src', 'pages', 'Panel', 'index.jsx'),
   },
   chromeExtensionBoilerplate: {
-    notHotReload: ['background', 'contentScript', 'captureScript', 'takeScreenshot', 'takeManualRecording', 'takeVideo', 'devtools'],
+    notHotReload: ['background', 'contentScript', 'captureScript', 'takeScreenshot', 'takeManualRecording', 'takeVideo', 'devtools', 'domDeltaRecorder'],
   },
   output: {
     filename: '[name].bundle.js',

@@ -53,21 +53,31 @@ const Popup = () => {
     checkContentScript()
   }, [])
 
-  // Reactively sync authData from chrome.storage into Recoil state so that
-  // when the web app authenticates via the background (onMessageExternal), the
-  // popup updates without requiring a manual reload.
+  // Auth is written by the background script into chrome.storage.local.
+  // Recoil initializeState is async and not awaited, so the first popup open
+  // often misses auth already stored before mount. Pull on mount, then keep
+  // listening for live updates while the popup stays open.
   useEffect(() => {
+    chrome.storage.local.get(['authData'], (result) => {
+      if (chrome.runtime.lastError) {
+        console.log(chrome.runtime.lastError.message)
+        return
+      }
+      if (result.authData) {
+        setAuthData(result.authData)
+      }
+    })
+
     function onStorageChanged(changes, areaName) {
       if (areaName !== 'local') return
-      if (changes.authData && changes.authData.newValue) {
-        setAuthData(changes.authData.newValue)
-      }
+      if (!changes.authData) return
+      setAuthData(changes.authData.newValue || {})
     }
     chrome.storage.onChanged.addListener(onStorageChanged)
     return () => {
       chrome.storage.onChanged.removeListener(onStorageChanged)
     }
-  }, [])
+  }, [setAuthData])
 
   useEffect(() => {
 console.log('pathname')

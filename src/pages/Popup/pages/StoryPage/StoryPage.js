@@ -14,7 +14,7 @@ import axios from '../../../../helpers/axiosInstance'
 import * as ENV from '../../../../config.json'
 
 const CAPTURE_TYPE = {
-  page: 'page',
+  // page: 'page',
   screenshot: 'screenshot',
   video: 'video'
 }
@@ -291,7 +291,7 @@ const StoryPage = function (props) {
                   <C.OpenButton__Text>{story.name}</C.OpenButton__Text>
                   <C.OpenButton__Icon type={'select'} rotate={90}/>
                 </C.OpenButton>
-                <C.GetStartedButton__Wrapper>
+                {/* <C.GetStartedButton__Wrapper>
                   <C.GetStartedButton__CaptureList>
                     {Object.keys(CAPTURE_TYPE).map((captureType) => {
                       let isSelected = false
@@ -319,7 +319,7 @@ const StoryPage = function (props) {
                     }}>
                     Capture {selectedCaptureType}
                   </C.GetStartedButton>
-                </C.GetStartedButton__Wrapper>
+                </C.GetStartedButton__Wrapper> */}
 
 
               </C.TopSection>

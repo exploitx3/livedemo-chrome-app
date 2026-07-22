@@ -93,6 +93,30 @@ if (!isInFrameCheck) {
 
         }
 
+        if (msgObj.type === 'domDelta_inject') {
+            if (!window.__livedemoDomDeltaBridge) {
+                window.__livedemoDomDeltaBridge = true
+                window.addEventListener('message', (event) => {
+                    if (!event.data || event.data.source !== 'livedemo-dom-delta-recorder') {
+                        return
+                    }
+                    const { source, ...rest } = event.data
+                    chrome.runtime.sendMessage(rest, () => {
+                        void chrome.runtime.lastError
+                    })
+                })
+            }
+            injectScript('domDeltaRecorder.bundle.js')
+            // Nudge page script in case it was already injected from a prior navigation
+            window.postMessage({ source: 'livedemo-dom-delta-content', type: 'domDelta_pageStart' }, '*')
+            sendResponse({ ok: true })
+        }
+
+        if (msgObj.type === 'domDelta_requestStop') {
+            window.postMessage({ source: 'livedemo-dom-delta-content', type: 'domDelta_pageStop' }, '*')
+            sendResponse({ ok: true })
+        }
+
         if (msgObj.type === 'Background-captureStarted') {
             window.postMessage({
                 type: 'CaptureComponent-captureStarted',

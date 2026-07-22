@@ -5,6 +5,7 @@ const io = require('socket.io-client')
 const shortUUID = require('short-uuid')
 const axios = require('axios')
 import * as flix from './flix'
+import * as domDelta from './domDelta'
 
 import {getImage, takeScreenshotAndSend} from './helpers'
 
@@ -32,6 +33,10 @@ if (typeof atob === 'undefined') {
 }
 
 console.log('This prints to the console of the service worker (background script)')
+
+domDelta.restoreSession().catch((err) => {
+    console.error('domDelta restoreSession failed', err)
+})
 
 var synchRequestsTimer = null
 var isAttached = false
@@ -440,6 +445,61 @@ chrome.runtime.onMessage.addListener(function (msgObj, sendCommander, sendComman
         console.log(flixVars)
 
         flix.flix_stopRecording(flixVars, flixVarsGlobal, sendCommandResp)
+    }
+
+    if (msgObj.type === 'domDelta_startRecording') {
+        resolveAuthDataForRecording(msgObj, (authData) => {
+            const payload = { ...msgObj, authData }
+            domDelta.startRecording(payload)
+                .then((result) => {
+                    sendCommandResp({ success: true, ...result })
+                })
+                .catch((err) => {
+                    console.error('domDelta_startRecording failed', err)
+                    sendCommandResp({ success: false, error: String(err && err.message ? err.message : err) })
+                })
+        })
+    }
+
+    if (msgObj.type === 'domDelta_stopRecording') {
+        const fromPage = !!(sendCommander && sendCommander.tab)
+        domDelta.stopRecording({ fromPage })
+            .then((result) => {
+                sendCommandResp(result)
+            })
+            .catch((err) => {
+                console.error('domDelta_stopRecording failed', err)
+                sendCommandResp({ success: false, error: String(err && err.message ? err.message : err) })
+            })
+    }
+
+    if (msgObj.type === 'domDelta_eventsBatch') {
+        domDelta.handleEventsBatch(msgObj.events)
+        sendCommandResp({ success: true })
+    }
+
+    if (msgObj.type === 'domDelta_eventsBatchStart') {
+        domDelta.onEventsBatchStart(msgObj)
+        sendCommandResp({ success: true })
+    }
+
+    if (msgObj.type === 'domDelta_eventsBatchChunk') {
+        domDelta.onEventsBatchChunk(msgObj)
+        sendCommandResp({ success: true })
+    }
+
+    if (msgObj.type === 'domDelta_eventsBatchFinished') {
+        domDelta.onEventsBatchFinished(msgObj)
+        sendCommandResp({ success: true })
+    }
+
+    if (msgObj.type === 'domDelta_click') {
+        domDelta.handleClick(msgObj)
+        sendCommandResp({ success: true })
+    }
+
+    if (msgObj.type === 'domDelta_checkRecording') {
+        sendCommandResp({ IsAttached: !!domDelta.isRecording() })
     }
 
 
