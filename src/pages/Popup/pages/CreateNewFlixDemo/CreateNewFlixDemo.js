@@ -49,11 +49,11 @@ const CreateNewFlixDemo = function (props) {
     const [isSaving, setIsSaving] = useState(false)
     const [isLoading, setIsLoading] = useState(false)
     // Default new demo path: DOM / html_delta recording
-    const [demoMode, setDemoMode] = useState('dom')
+    const [demoMode, setDemoMode] = useState('manual')
 
     const DEMO_MODE_OPTIONS = [
-        { value: 'dom', label: 'HTML Demo', actionLabel: 'Start recording' },
         { value: 'manual', label: 'Screenshots + Video Recording', actionLabel: 'Start recording' },
+        { value: 'dom', label: 'HTML Demo', actionLabel: 'Start recording' },
         { value: 'ai', label: 'AI Recording', actionLabel: 'Start recording' },
         { value: 'blank', label: 'Blank Demo', actionLabel: 'Create blank' },
     ]
@@ -207,8 +207,9 @@ const CreateNewFlixDemo = function (props) {
     }, [])
 
     useEffect(() => {
-        // Trust background session over Recoil — DOM stop-from-pill used to leave
-        // isRecording=true in localStorage even after preview opened.
+        // Background check restores DOM session from storage when SW woke cold.
+        // Prefer bg truth over Recoil so a stale isRecording=true (pill stop) does
+        // not force a second stop — but once bg says live, stop like Dashboard.
         checkRecording()
             .then((isRecordingBg) => {
                 const recording = !!isRecordingBg

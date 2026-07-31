@@ -499,7 +499,15 @@ chrome.runtime.onMessage.addListener(function (msgObj, sendCommander, sendComman
     }
 
     if (msgObj.type === 'domDelta_checkRecording') {
-        sendCommandResp({ IsAttached: !!domDelta.isRecording() })
+        // SW may wake with empty in-memory session; restore before answering.
+        domDelta.restoreSession()
+            .then(() => {
+                sendCommandResp({ IsAttached: !!domDelta.isRecording() })
+            })
+            .catch((err) => {
+                console.error('domDelta_checkRecording restore failed', err)
+                sendCommandResp({ IsAttached: !!domDelta.isRecording() })
+            })
     }
 
 

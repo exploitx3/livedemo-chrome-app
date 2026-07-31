@@ -71,6 +71,11 @@ function persistSession() {
 function restoreSession() {
   return chrome.storage.local.get(['domDeltaSession']).then((result) => {
     const saved = result && result.domDeltaSession
+    // Live SW session already has uploadQueue / pending click thumbs — do not
+    // clobber them (checkRecording used to call restore and drop in-flight clicks).
+    if (session.active) {
+      return session
+    }
     if (saved && saved.active) {
       session.active = saved.active
       session.storyId = saved.storyId
