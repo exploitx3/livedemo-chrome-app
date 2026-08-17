@@ -77,8 +77,13 @@ function clearCursorPositions(flixVars) {
     flixVars.cursorPositions = []
 }
 
+function clearRecordingBadge() {
+    chrome.action.setBadgeText({ text: '' })
+}
+
 function resetVars(flixVars) {
     console.log('resetting flixVars')
+    clearRecordingBadge()
 
 
     flixVars.autoRecordingId = undefined
@@ -99,12 +104,39 @@ function resetVars(flixVars) {
     flixVars.videoEndMs = 0
 
     flixVars.recording = false
+    flixVars.IsAttached = false
+    flixVars.stopInProgress = false
 
     flixVars.currentScreenshotDataUrl = ''
     flixVars.screenshots = {}
 
-    return persistLightFlixVars(flixVars)
+    return chrome.storage.local.get(null)
+        .then((storage) => {
+            const screenshotKeys = Object.keys(storage).filter((key) => key.startsWith('screenshot_'))
+            if (screenshotKeys.length) {
+                return chrome.storage.local.remove(screenshotKeys)
+            }
+        })
+        .then(() => persistLightFlixVars(flixVars))
 
+}
+
+async function mergeScreenshotsFromStorage(inMemoryScreenshots) {
+    const storage = await chrome.storage.local.get(null)
+    const fromStorage = {}
+
+    Object.entries(storage).forEach(([key, value]) => {
+        if (key.startsWith('screenshot_')) {
+            fromStorage[key.slice('screenshot_'.length)] = value
+        }
+    })
+
+    return { ...fromStorage, ...inMemoryScreenshots }
+}
+
+function resumeRecordingAfterSwRestart(flixVars) {
+    registerRecordingMessageListener(flixVars, listenerClosure(flixVars))
+    startTakingScreenshots(flixVars)
 }
 
 function listenerClosure(flixVars) {
@@ -145,6 +177,8 @@ function startAIRecording(flixVars) {
     console.log("startAIRecording called final")
 
     clearCursorPositions(flixVars)
+    flixVars.demoClickCount = 0
+    clearRecordingBadge()
 
     registerRecordingMessageListener(flixVars, listenerClosure(flixVars))
     startTakingScreenshots(flixVars)
@@ -195,6 +229,8 @@ function completeAutoRecording(autoRecordingId, workspaceId, authToken) {
 function start(flixVars) {
 
     clearCursorPositions(flixVars)
+    flixVars.demoClickCount = 0
+    clearRecordingBadge()
 
     registerRecordingMessageListener(flixVars, listenerClosure(flixVars))
     startTakingScreenshots(flixVars)
@@ -204,13 +240,14 @@ function start(flixVars) {
 }
 
 function stop(flixVars, storage) {
-    console.log(`Stopping demo recording of type ${flixVars.type}`)
+    console.log('[LD:bg:flix] stop:', { type: flixVars.type })
 
     clearRecordingMessageListener()
 
     // Flix live demo + plain tab video: helper tab records; same STOP_RECORDING path.
     if (flixVars.type === 'FlixDemo' || flixVars.type === 'Video') {
         stopTakingScreenshots(flixVars)
+        console.log('[LD:bg:flix] stop: calling stopRecordingVideo', { helperTabId: storage && storage.helperTabId })
         return stopRecordingVideo(storage)
     }
 
@@ -298,35 +335,49 @@ async function onClick(flixVars, message, sender) {
 }
 
 function flix_stopRecording(flixVars, flixVarsGlobal, sendCommandResp) {
+    console.log('[LD:bg:flix] flix_stopRecording: start')
     // Snapshot then hard-clear so resume path cannot false-positive if later steps fail
     return chrome.storage.local.get(null)
         .then((storage) => {
             const wasRecording = !!storage.recording
             const stopType = storage.type ?? flixVars.type
+            console.log('[LD:bg:flix] flix_stopRecording: storage read', {
+                wasRecording,
+                stopType,
+                IsAttached: storage.IsAttached,
+                helperTabId: storage.helperTabId,
+            })
             flixVars.recording = false
-            return chrome.storage.local.set({ IsAttached: false, recording: false })
+            return chrome.storage.local.set({ stopInProgress: true, recording: false })
                 .then(() => ({ storage, wasRecording, stopType }))
         })
         .then(({ storage, wasRecording, stopType }) => {
             if (!wasRecording && stopType !== 'FlixDemo' && stopType !== 'Video') {
 
-                chrome.runtime.sendMessage({
-                    name: 'popup_recordingCompleted',
-                    storyDemo: { _id: '' }
+                console.log('[LD:bg:flix] flix_stopRecording: not recording — early exit')
+                clearRecordingBadge()
+                return chrome.storage.local.set({
+                    stopInProgress: false,
+                    IsAttached: false,
+                    recording: false,
+                }).then(() => {
+                    chrome.runtime.sendMessage({
+                        name: 'popup_recordingCompleted',
+                        storyDemo: { _id: '' }
+                    }, () => void chrome.runtime.lastError)
+
+                    console.log('flix_stopRecording: not recording, sending success')
+                    sendCommandResp({
+                        success: true
+                    })
                 })
-                
-                console.log('flix_stopRecording: not recording, sending success')
-                sendCommandResp({
-                    success: true
-                })
-                return
             }
             // flixVars = storage.flixVars
 
 
             flixVars.IsAttached = false
 
-            console.log('stopRecording')
+            console.log('[LD:bg:flix] flix_stopRecording: stopping', { stopType })
 
             // Heavy fields (screenshots, cursorPositions) live only in memory now,
             // so merge storage over the in-memory vars instead of replacing them.
@@ -340,15 +391,21 @@ function flix_stopRecording(flixVars, flixVarsGlobal, sendCommandResp) {
 
                 stopRecordingDemoFromBackground(flixVars, storage)
                     .then(() => {
-
+                        console.log('[LD:bg:flix] flix_stopRecording: stopRecordingDemoFromBackground ok')
                         sendCommandResp({
                             success: true
                         })
                     })
                     .catch((err) => {
-                        console.error('flix_stopRecording Flix/Video', err)
+                        console.error('[LD:bg:flix] flix_stopRecording: Flix/Video failed', err)
+                        clearRecordingBadge()
                         flixVars.recording = false
-                        return chrome.storage.local.set({ recording: false }).then(() => {
+                        flixVars.stopInProgress = false
+                        return chrome.storage.local.set({
+                            recording: false,
+                            stopInProgress: false,
+                            IsAttached: false,
+                        }).then(() => {
                             sendCommandResp({ success: false, error: err && err.message ? err.message : String(err) })
                         })
                     })
@@ -367,6 +424,7 @@ function flix_stopRecording(flixVars, flixVarsGlobal, sendCommandResp) {
                     })
                     .catch((err) => {
                         console.error('flix_stopRecording AIDemo', err)
+                        clearRecordingBadge()
                         flixVars.recording = false
                         return chrome.storage.local.set({ recording: false }).then(() => {
                             sendCommandResp({ success: false, error: err && err.message ? err.message : String(err) })
@@ -385,6 +443,7 @@ function flix_stopRecording(flixVars, flixVarsGlobal, sendCommandResp) {
                     })
                     .catch((err) => {
                         console.error('flix_stopRecording fallback', err)
+                        clearRecordingBadge()
                         sendCommandResp({ success: false, error: err && err.message ? err.message : String(err) })
                     })
             }
@@ -400,7 +459,7 @@ function stopAndOpenAutoRecording(flixVars, flixVarsGlobal, sendCommandResp) {
         chrome.runtime.sendMessage({
             name: 'popup_recordingCompleted',
             storyDemo: { _id: '' }
-        })
+        }, () => void chrome.runtime.lastError)
 
         return resetVars(flixVars)
             .then(() => {
@@ -516,58 +575,84 @@ function startTakingScreenshots(flixVars) {
     }, 550)
 }
 
-function takeScreenshot(flixVars) {
-    return chrome.windows.getLastFocused()
-        .then(window => {
+function isCapturableTabUrl(url) {
+    if (!url) {
+        return false
+    }
+    const base = url.split(/[?#]/)[0]
+    return base.startsWith('http://') || base.startsWith('https://') || base.startsWith('file://')
+}
 
-            chrome.tabs.captureVisibleTab(window.id, { format: 'png' },
-                image => {
+function getRecordedTabId(flixVars) {
+    return flixVars.demoData?.tabInfo?.id
+        ?? flixVars.demoData?.tabInfo?.tabId
+        ?? flixVars.videoTabId
+        ?? 0
+}
 
-                    // console.log(image)
-                    // console.log('Took screenshot')
-                    if (image) {
-                        flixVars.currentScreenshotDataUrl = image
-                    }
+// Capture from the recorded tab's window — not getLastFocused (popup/chrome:// breaks stop).
+function captureScreenshotForRecording(flixVars) {
+    return new Promise((resolve) => {
+        const finish = (image) => resolve(image || '')
 
-                    const error = chrome.runtime.lastError
-                    if (error?.message) {
-                        console.log(error.message)
-                    }
-                }
-            )
+        const captureInWindow = (windowId) => {
+            chrome.tabs.captureVisibleTab(windowId, { format: 'png' }, (image) => {
+                void chrome.runtime.lastError
+                finish(image)
+            })
+        }
+
+        const tabId = getRecordedTabId(flixVars)
+        if (!tabId) {
+            chrome.windows.getLastFocused()
+                .then((window) => captureInWindow(window.id))
+                .catch(() => finish(''))
+            return
+        }
+
+        chrome.tabs.get(tabId, (tab) => {
+            if (chrome.runtime.lastError || !tab) {
+                finish('')
+                return
+            }
+            if (!isCapturableTabUrl(tab.url)) {
+                finish('')
+                return
+            }
+            captureInWindow(tab.windowId)
         })
+    })
+}
 
+function takeScreenshot(flixVars) {
+    return captureScreenshotForRecording(flixVars)
+        .then((image) => {
+            if (image) {
+                flixVars.currentScreenshotDataUrl = image
+            }
+        })
+        .catch(() => {})
 }
 
 
 function takeNSaveScreenshot(clickId, flixVars) {
-    return new Promise((resolve, reject) => {
+    return new Promise((resolve) => {
 
         setTimeout(() => {
-            chrome.windows.getLastFocused().then((window) => {
-                chrome.tabs.captureVisibleTab(window.id, { format: 'png' },
-                    image => {
-
-                        // console.log(image)
-                        // console.log('Took screenshot')
-                        if (image) {
-                            flixVars.currentScreenshotDataUrl = image
-                        }
-
-                        saveScreenshot(flixVars, clickId, flixVars.currentScreenshotDataUrl)
-
-                        resolve({
-                            imageData: flixVars.currentScreenshotDataUrl,
-                            clickId
-                        })
-
-                        const error = chrome.runtime.lastError
-                        if (error?.message) {
-                            console.log(error.message)
-                        }
+            captureScreenshotForRecording(flixVars)
+                .then((image) => {
+                    if (image) {
+                        flixVars.currentScreenshotDataUrl = image
                     }
-                )
-            })
+                    const imageData = flixVars.currentScreenshotDataUrl || ''
+                    saveScreenshot(flixVars, clickId, imageData)
+                    resolve({ imageData, clickId })
+                })
+                .catch(() => {
+                    const imageData = flixVars.currentScreenshotDataUrl || ''
+                    saveScreenshot(flixVars, clickId, imageData)
+                    resolve({ imageData, clickId })
+                })
         }, 550)
 
 
@@ -579,6 +664,7 @@ function stopTakingScreenshots(flixVars) {
 
     if (flixVars.screenshotTimer) {
         clearInterval(flixVars.screenshotTimer)
+        flixVars.screenshotTimer = null
     }
 
     flixVars.isTakingScreenshots = false
@@ -644,6 +730,7 @@ function saveScreenshot(flixVars, clickId, dataUrl) {
 
 
     flixVars.screenshots[clickId] = dataUrl
+    chrome.storage.local.set({ ['screenshot_' + clickId]: dataUrl })
 
     // flixVars.screenshots[clickId] = window.URL.createObjectURL(new Blob([dataUrl]))
 
@@ -799,34 +886,37 @@ async function uploadVideo(videoBlob, workspaceId, flixVars) {
 
 async function afterRecordingVideo(flixVars) {
 
-
-    // console.log('afterRecordingVideo:')
-    // console.log(flixVars)
-
+    console.log('[LD:bg:flix] afterRecordingVideo: start', {
+        hasVideoBlob: !!(flixVars.videoBlobs && flixVars.videoBlobs.size),
+        hasDemoData: !!flixVars.demoData,
+        demoTitle: flixVars.demoData && flixVars.demoData.demoTitle,
+    })
 
     await takeNSaveScreenshot('final', flixVars)
-    // if (flixVars.currentScreenshotDataUrl) {
-    //
-    //   saveScreenshot('final', flixVars.currentScreenshotDataUrl)
-    // }
 
-    console.log('took final screenshot')
+    console.log('[LD:bg:flix] afterRecordingVideo: final screenshot done')
 
     const videoBlob = flixVars.videoBlobs
 
+    console.log('[LD:bg:flix] afterRecordingVideo: finalizeWebmBlob start')
     const videoBlobWithMetadata = await finalizeWebmBlob(videoBlob)
-
-    const screenshots = flixVars.screenshots
-
+    console.log('[LD:bg:flix] afterRecordingVideo: finalizeWebmBlob done')
 
     const videoBase64 = await blobToBase64(videoBlobWithMetadata)
-    console.log('videoBase64 converted')
+    console.log('[LD:bg:flix] afterRecordingVideo: video base64 ready', {
+        length: videoBase64 && videoBase64.length,
+    })
 
     // Release the raw video copies; only videoBase64 is needed from here on.
     flixVars.videoBlobs = null
     flixVars.videoBlobsUrl = ''
 
+    const screenshots = await mergeScreenshotsFromStorage(flixVars.screenshots)
+    console.log('[LD:bg:flix] afterRecordingVideo: screenshots merged', {
+        count: Object.keys(screenshots).length,
+    })
 
+    console.log('[LD:bg:flix] afterRecordingVideo: POST inProgressStory')
     return await fetch(`${ENV.STORIES_API}/inProgressStory`, {
         method: 'POST',
         headers: {
@@ -840,6 +930,9 @@ async function afterRecordingVideo(flixVars) {
         })
     })
         .then(res => {
+            if (!res.ok) {
+                throw new Error(`inProgressStory failed: ${res.status}`)
+            }
             return res.json();
         })
         .then((storyInfo) => {
@@ -862,24 +955,24 @@ async function afterRecordingVideo(flixVars) {
                 aspectRatio: flixVars.aspectRatio,
             }
 
-            let payloadDataUrl = createDataUrl(payload)
+            const payloadJson = JSON.stringify(payload)
 
             clearCursorPositions(flixVars)
 
+            console.log('[LD:bg:flix] afterRecordingVideo: payload ready', {
+                storyId: storyInfo._id,
+                payloadJsonLength: payloadJson.length,
+            })
+
             return {
-                payloadDataUrl,
+                payload,
+                payloadJson,
                 newStoryId: storyInfo._id
             }
         })
     //send payload to server
 }
 
-function createDataUrl(payload) {
-    let stringifiedPayload = JSON.stringify(payload)
-    let bas64Paylaod = btoa(encodeURIComponent(stringifiedPayload)) //btoa(stringifiedPayload)
-
-    return `data:application/json:base64,${bas64Paylaod}`
-}
 
 
 function processStream(flixVars, stream) {
@@ -1094,14 +1187,16 @@ function stopRecordingVideo(storage) {
 
     return new Promise((resolve, reject) => {
 
-
+        console.log('[LD:bg:flix] stopRecordingVideo: send STOP_RECORDING', { helperTabId: storage.helperTabId })
         chrome.tabs.sendMessage(storage.helperTabId, {
             // name: MESSAGE_NAMES.StopRecording,
             name: 'STOP_RECORDING',
         }, {}, function (response) {
-
-
-            resolve()
+            if (chrome.runtime.lastError) {
+                console.warn('[LD:bg:flix] stopRecordingVideo: lastError', chrome.runtime.lastError.message)
+            }
+            console.log('[LD:bg:flix] stopRecordingVideo: helper ack', response)
+            resolve(response)
         })
 
 
@@ -1231,15 +1326,20 @@ async function startRecordingVideoFromBackground(flixVars) {
 
 function stopRecordingDemoFromBackground(flixVars, storage) {
 
+    const recordedTabId = getRecordedTabId(flixVars)
+        || storage?.demoData?.tabInfo?.id
+        || storage?.demoData?.tabInfo?.tabId
 
-    return getCurrentTab()
-        .then((tab) => {
+    console.log('[LD:bg:flix] stopRecordingDemoFromBackground', { recordedTabId, type: flixVars.type })
 
-            if (tab && tab.id) {
-                chrome.tabs.sendMessage(tab.id, {
-                    name: MESSAGE_NAMES.RemoveEventListeners,
-                })
-            }
+    if (recordedTabId) {
+        chrome.tabs.sendMessage(recordedTabId, {
+            name: MESSAGE_NAMES.RemoveEventListeners,
+        }, () => void chrome.runtime.lastError)
+    }
+
+    return Promise.resolve()
+        .then(() => {
 
             // chrome.browserAction.setBadgeText({
             //   text: '',
@@ -1253,6 +1353,7 @@ function stopRecordingDemoFromBackground(flixVars, storage) {
                 })
                 .catch((error) => {
                     // Ensure flag stays false even if stop() fails mid-flight
+                    clearRecordingBadge()
                     flixVars.recording = false
                     return chrome.storage.local.set({ recording: false }).then(() => {
                         throw error
@@ -1266,6 +1367,7 @@ function stopRecordingDemoFromBackground(flixVars, storage) {
 export {
     getBlobFromUrl,
     persistLightFlixVars,
+    clearRecordingBadge,
     startRecordingVideoFromBackground,
     uploadVideo,
     resetVars,
@@ -1273,6 +1375,7 @@ export {
     afterRecordingVideo,
     startRecordingVideoWithHelperTab,
     startTakingScreenshots,
+    resumeRecordingAfterSwRestart,
     startRecordingDemoFromBackground,
     stopRecordingDemoFromBackground,
     startRecordingAIDemoFromBackground,

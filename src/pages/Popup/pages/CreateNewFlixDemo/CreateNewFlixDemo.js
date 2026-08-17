@@ -13,6 +13,20 @@ import shortUUID from 'short-uuid'
 import axios from '../../../../helpers/axiosInstance'
 import * as ENV from '../../../../config.json'
 
+const LD_POPUP = '[LD:popup:flix]'
+
+function logPopup(step, detail) {
+    if (detail === undefined) {
+        console.log(LD_POPUP, step)
+        return
+    }
+    console.log(LD_POPUP, step, detail)
+}
+
+function logPopupError(step, err) {
+    console.error(LD_POPUP, step, err && err.message ? err.message : err, err)
+}
+
 async function getTabFromBG() {
 
     return new Promise(function (resolve, reject) {
@@ -117,23 +131,23 @@ const CreateNewFlixDemo = function (props) {
                 type: 'flix_getTabInfo',
             }, (result) => {
 
-                console.log('flix_getTabInfo')
-                console.log(result)
+                logPopup('getTab: flix_getTabInfo response', result)
 
                 let err = chrome.runtime.lastError
                 if (err) {
-                    console.log(err.message)
+                    logPopup('getTab: lastError', err.message)
+                    reject(new Error(`flix_getTabInfo: ${err.message}`))
+                    return
                 }
 
                 if (!(result && result.tabInfo)) {
-
-                    reject(result)
-                } else {
-
-
-                    setTabInfo(result.tabInfo)
-                    resolve(result.tabInfo)
+                    logPopup('getTab: no tabInfo', result && result.error)
+                    resolve(null)
+                    return
                 }
+
+                setTabInfo(result.tabInfo)
+                resolve(result.tabInfo)
 
             })
 
@@ -141,30 +155,31 @@ const CreateNewFlixDemo = function (props) {
     }
 
     useEffect(() => {
+        logPopup('mount: register popup_recordingCompleted listener')
 
-        chrome.runtime.onMessage.addListener(
-            function (request, sender, sendResponse) {
+        function onRuntimeMessage(request, sender, sendResponse) {
 
-                if (request.name === "popup_recordingCompleted") {
+            if (request.name === "popup_recordingCompleted") {
 
-                    console.log('popup_recordingCompleted:')
-                    console.log(request)
+                logPopup('event: popup_recordingCompleted', request)
 
-                    // DOM stop from page pill never ran popup stopRecording(), so
-                    // clear Recoil here or the next open still thinks we're recording.
-                    setIsRecording(false)
-                    setNewDemoName('')
-                    setIsNameChosen(false)
-                    setIsSaving(false)
-                    chrome.action.setIcon({ path: 'logo-128.png' })
+                // DOM stop from page pill never ran popup stopRecording(), so
+                // clear Recoil here or the next open still thinks we're recording.
+                setIsRecording(false)
+                setNewDemoName('')
+                setIsNameChosen(false)
+                setIsSaving(false)
+                chrome.action.setIcon({ path: 'logo-128.png' })
 
-                }
-
-                sendResponse({})
             }
-        );
 
-    })
+            sendResponse({})
+        }
+
+        chrome.runtime.onMessage.addListener(onRuntimeMessage)
+        return () => chrome.runtime.onMessage.removeListener(onRuntimeMessage)
+
+    }, [])
 
 
     function getWorkspaces(authToken) {
@@ -207,25 +222,40 @@ const CreateNewFlixDemo = function (props) {
     }, [])
 
     useEffect(() => {
+        logPopup('mount: init checkRecording flow')
         // Background check restores DOM session from storage when SW woke cold.
         // Prefer bg truth over Recoil so a stale isRecording=true (pill stop) does
         // not force a second stop — but once bg says live, stop like Dashboard.
         checkRecording()
-            .then((isRecordingBg) => {
-                const recording = !!isRecordingBg
-                console.log('isRecording - ', recording)
-                setIsRecording(recording)
+            .then(({ shouldStop, stopInProgress, isActive }) => {
+                logPopup('mount: checkRecording result', { shouldStop, stopInProgress, isActive })
+                setIsRecording(isActive)
 
-                if (recording) {
-                    stopRecording()
+                if (stopInProgress && !shouldStop) {
+                    logPopup('mount: stop in progress — show spinner, skip duplicate stop')
+                    setIsSaving(true)
+                    setIsNameChosen(true)
                     return
                 }
 
+                if (shouldStop) {
+                    logPopup('mount: active recording — calling stopRecording()')
+                    return stopRecording()
+                        .then((res) => logPopup('mount: stopRecording settled', res))
+                        .catch((err) => logPopupError('mount: stopRecording failed', err))
+                }
+
+                logPopup('mount: not recording — loading tab title')
+                setIsSaving(false)
                 setIsNameChosen(false)
                 chrome.action.setIcon({ path: 'logo-128.png' })
 
                 return getTab()
                     .then((activeTab) => {
+                        logPopup('mount: getTab ok', { tabId: activeTab && activeTab.id, title: activeTab && activeTab.title })
+                        if (!activeTab) {
+                            return null
+                        }
                         return getWindowMeasures(activeTab.id)
                             .then((measures) => {
                                 setWindowMeasures(measures)
@@ -233,16 +263,19 @@ const CreateNewFlixDemo = function (props) {
                             })
                     })
                     .then((activeTab) => {
-                        console.log('livedemo title set')
-                        console.log(activeTab.title)
+                        if (!activeTab) {
+                            logPopup('mount: no tab behind popup — skip title')
+                            return
+                        }
+                        logPopup('mount: set demo title from tab', activeTab.title)
                         setNewDemoName(activeTab.title)
                     })
+                    .catch((err) => {
+                        logPopup('mount: getTab/measures skipped', err && err.message ? err.message : err)
+                    })
             })
+            .catch((err) => logPopupError('mount: checkRecording flow failed', err))
 
-        return () => {
-            setIsNameChosen(false)
-            setNewDemoName('')
-        }
     }, [])
 
 
@@ -287,34 +320,75 @@ const CreateNewFlixDemo = function (props) {
     }
 
     function checkRecording() {
+        logPopup('checkRecording: start')
 
-        return new Promise((resolve, reject) => {
+        // Only `recording === true` means a live Flix session. Leftover IsAttached /
+        // helperTabId from a prior stop must not trip the spinner or auto-stop.
+        return new Promise((resolve) => {
+            chrome.storage.local.get(
+                ['recording', 'IsAttached', 'stopInProgress', 'type', 'helperTabId'],
+                (stored) => {
+                    void chrome.runtime.lastError
+                    const recording = stored.recording === true
+                    const stopInProgress = stored.stopInProgress === true && recording
+                    const shouldStop = recording && !stored.stopInProgress
+                    const isActive = recording || stopInProgress
 
+                    logPopup('checkRecording: storage', {
+                        recording,
+                        stopInProgress: stored.stopInProgress,
+                        IsAttached: stored.IsAttached,
+                        helperTabId: stored.helperTabId,
+                        type: stored.type,
+                        shouldStop,
+                        isActive,
+                    })
 
-            chrome.runtime.sendMessage({
-                type: 'domDelta_checkRecording',
-            }, function (deltaResponse) {
-
-                if (deltaResponse && deltaResponse.IsAttached) {
-                    resolve(true)
-                    return
-                }
-
-                chrome.runtime.sendMessage({
-                    type: 'flixCheckRecording',
-                }, function (response) {
-
-                    let err = chrome.runtime.lastError
-                    if (err) {
-                        console.log(err.message)
+                    if (!recording && (stored.IsAttached || stored.helperTabId || stored.stopInProgress)) {
+                        chrome.storage.local.set({
+                            IsAttached: false,
+                            helperTabId: 0,
+                            stopInProgress: false,
+                        })
                     }
 
-                    console.log('flixCheckRecording ' + JSON.stringify(response))
-                    resolve(response && response.IsAttached)
-                })
-            })
+                    if (shouldStop || stopInProgress) {
+                        resolve({ shouldStop, stopInProgress, isActive })
+                        return
+                    }
+
+                    chrome.runtime.sendMessage({ type: 'domDelta_checkRecording' }, (deltaResponse) => {
+                        void chrome.runtime.lastError
+                        if (deltaResponse && deltaResponse.IsAttached) {
+                            logPopup('checkRecording: domDelta session active')
+                            resolve({ shouldStop: true, stopInProgress: false, isActive: true })
+                            return
+                        }
+                        resolve({ shouldStop: false, stopInProgress: false, isActive: false })
+                    })
+                }
+            )
         })
 
+    }
+
+    function resolveWorkspaceIdForStop() {
+        if (currentSelectedWorkspace && currentSelectedWorkspace._id) {
+            return Promise.resolve(currentSelectedWorkspace._id)
+        }
+        return new Promise((resolve, reject) => {
+            chrome.storage.local.get(['demoData', 'currentSelectedWorkspace'], (stored) => {
+                void chrome.runtime.lastError
+                const workspaceId = stored.demoData && stored.demoData.workspaceId
+                    || stored.currentSelectedWorkspace && stored.currentSelectedWorkspace._id
+                if (workspaceId) {
+                    logPopup('stopRecording: workspaceId from storage', workspaceId)
+                    resolve(workspaceId)
+                    return
+                }
+                reject(new Error('stopRecording: no workspaceId in Recoil or chrome.storage'))
+            })
+        })
     }
 
     async function createBlankDemo(name, workspaceId, authToken) {
@@ -528,6 +602,12 @@ const CreateNewFlixDemo = function (props) {
 
 
     function stopRecording() {
+        logPopup('stopRecording: start', {
+            workspaceId: currentSelectedWorkspace && currentSelectedWorkspace._id,
+            sessionRecordingId,
+            newDemoName,
+            hasAuth: !!(authData && authData.token),
+        })
 
         setIsSaving(true)
 
@@ -540,12 +620,25 @@ const CreateNewFlixDemo = function (props) {
         return new Promise((resolve, reject) => {
 
             // Prefer DOM-delta stop when that session is active
+            logPopup('stopRecording: domDelta_checkRecording')
             chrome.runtime.sendMessage({ type: 'domDelta_checkRecording' }, (deltaCheck) => {
+                const deltaErr = chrome.runtime.lastError
+                if (deltaErr) {
+                    logPopup('stopRecording: domDelta_check lastError', deltaErr.message)
+                }
+                logPopup('stopRecording: domDelta_check response', deltaCheck)
+
                 if (deltaCheck && deltaCheck.IsAttached) {
+                    logPopup('stopRecording: domDelta path')
                     chrome.runtime.sendMessage({
                         type: 'domDelta_stopRecording',
                         authData: authData,
                     }, (res) => {
+                        const err = chrome.runtime.lastError
+                        if (err) {
+                            logPopup('stopRecording: domDelta_stop lastError', err.message)
+                        }
+                        logPopup('stopRecording: domDelta_stop response', res)
                         setTimeout(() => {
                             setNewDemoName('')
                             setIsNameChosen(false)
@@ -556,35 +649,43 @@ const CreateNewFlixDemo = function (props) {
                     return
                 }
 
-                chrome.runtime.sendMessage({
-                    type: 'flix_stopRecording',
-                    demoData: {
-                        workspaceId: currentSelectedWorkspace._id,
-                        sessionRecordingId: sessionRecordingId,
-                        name: newDemoName,
-                    },
-                    authData: authData,
-                }, (res) => {
+                if (!currentSelectedWorkspace || !currentSelectedWorkspace._id) {
+                    logPopup('stopRecording: Recoil workspace missing — trying storage')
+                }
 
-                    // setTimeout(() => {
-                    //   navigate('/dashboard')
-                    // }, 3000)
+                resolveWorkspaceIdForStop()
+                    .then((workspaceId) => {
+                        logPopup('stopRecording: sending flix_stopRecording to background', { workspaceId })
+                        chrome.runtime.sendMessage({
+                            type: 'flix_stopRecording',
+                            demoData: {
+                                workspaceId: workspaceId,
+                                sessionRecordingId: sessionRecordingId,
+                                name: newDemoName,
+                            },
+                            authData: authData,
+                        }, (res) => {
+                            const err = chrome.runtime.lastError
+                            if (err) {
+                                logPopup('stopRecording: flix_stop lastError', err.message)
+                            }
+                            logPopup('stopRecording: flix_stopRecording ack from background', res)
 
-                    // let newStoryDemo = res.storyDemo
-                    setTimeout(() => {
+                            setTimeout(() => {
+                                logPopup('stopRecording: 35s wait elapsed, clearing popup state')
+                                setNewDemoName('')
+                                setIsNameChosen(false)
+                                setIsSaving(false)
+                                resolve(res)
+                            }, 35000)
 
-                        setNewDemoName('')
-                        setIsNameChosen(false)
-
+                        })
+                    })
+                    .catch((err) => {
                         setIsSaving(false)
-                        // console.log('shortId final ' + demoShortId)
-                        // window.open(`${ENV.SERVER_URL}/livedemos/${demoShortId}`, '_blank')
-
-                        resolve(res)
-
-                    }, 35000)
-
-                })
+                        logPopupError('stopRecording: abort', err)
+                        reject(err)
+                    })
             })
 
         })

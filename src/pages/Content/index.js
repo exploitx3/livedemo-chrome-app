@@ -2,6 +2,7 @@ import frameScript from './frameScript'
 import topScript from './topScript'
 
 import ENV from "../../config.json";
+import {createPayloadAssembler, splitPayload} from '../../helpers/chunkedPayload'
 
 
 async function onFetchResponse(resourceUrl, config) {
@@ -10,6 +11,8 @@ async function onFetchResponse(resourceUrl, config) {
 }
 
 let isInFrameCheck = isInIframe()
+
+const uploadStoryAssembler = createPayloadAssembler()
 
 if (!isInFrameCheck) {
 
@@ -130,30 +133,39 @@ if (!isInFrameCheck) {
         }
 
 
-        if (msgObj.type === 'Background-uploadStory') {
-            console.log('Background-uploadStory handler')
+        if (msgObj.type === 'Background-uploadStoryChunk') {
 
-            let storyId = msgObj.storyId
-            let authToken = msgObj.authToken
-            let blobData = getJsonFromDataUrl(msgObj.payloadDataUrl)
+            let payloadJson = uploadStoryAssembler.add(msgObj.chunkIndex, msgObj.totalChunks, msgObj.chunk)
+            sendResponse({ ok: true })
 
-            console.log('Background-uploadStory - blobData')
-            console.log(blobData)
-            console.log(`msg: ${JSON.stringify(msgObj)}`)
+            if (payloadJson) {
+                console.log('Background-uploadStoryChunk handler - payload complete')
 
-            return handleUploadStory(blobData, authToken)
-                .then(storyDoc => {
-                    console.log(`Background-uploadStory handler - successfully uploaded story ${storyDoc._id}`)
+                let storyId = msgObj.storyId
+                let authToken = msgObj.authToken
+                let blobData = JSON.parse(payloadJson)
 
-                    const videoBase64 = blobData && blobData.videoBase64
-                    if (videoBase64) {
-                        window.postMessage({
-                            type: 'LiveDemoPreview-uploadStoryVideo',
-                            storyId: storyDoc._id || storyId,
-                            videoBase64
-                        }, window.location.origin)
-                    }
-                })
+                return handleUploadStory(blobData, authToken)
+                    .then(storyDoc => {
+                        console.log(`Background-uploadStoryChunk handler - successfully uploaded story ${storyDoc._id}`)
+
+                        const videoBase64 = blobData && blobData.videoBase64
+                        if (videoBase64) {
+                            // Relay preview video to the page in chunks too;
+                            // one postMessage with 100MB+ string can jank/fail.
+                            const videoChunks = splitPayload(videoBase64)
+                            videoChunks.forEach((chunk, chunkIndex) => {
+                                window.postMessage({
+                                    type: 'LiveDemoPreview-uploadStoryVideoChunk',
+                                    storyId: storyDoc._id || storyId,
+                                    chunkIndex: chunkIndex,
+                                    totalChunks: videoChunks.length,
+                                    chunk: chunk,
+                                }, window.location.origin)
+                            })
+                        }
+                    })
+            }
         }
 
 
@@ -172,15 +184,6 @@ if (!isInFrameCheck) {
     // injectScript('frameScript.bundle.js')
 }
 
-function getJsonFromDataUrl(dataUrl) {
-    const base64Part = dataUrl.split(",")[1];
-    const jsonString = decodeURIComponent(atob((base64Part)));
-
-    // console.log('decoded jsonString')
-    // console.log(jsonString)
-    return JSON.parse(jsonString);
-}
-
 async function handleUploadStory(payload, authToken) {
 
     return await fetch(`${ENV.STORIES_API}/stories`, {
@@ -193,6 +196,9 @@ async function handleUploadStory(payload, authToken) {
         body: JSON.stringify(payload)
     })
         .then(res => {
+            if (!res.ok) {
+                throw new Error(`stories upload failed: ${res.status}`)
+            }
             return res.json();
         })
     //send payload to server

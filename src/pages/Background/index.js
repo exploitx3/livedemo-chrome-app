@@ -8,6 +8,7 @@ import * as flix from './flix'
 import * as domDelta from './domDelta'
 
 import {getImage, takeScreenshotAndSend} from './helpers'
+import {splitPayload} from '../../helpers/chunkedPayload'
 
 import * as Sentry from '@sentry/browser'
 
@@ -33,6 +34,71 @@ if (typeof atob === 'undefined') {
 }
 
 console.log('This prints to the console of the service worker (background script)')
+
+// Payload exceeds the 64MiB tabs.sendMessage cap, so it goes over in ordered
+// chunks; each waits for the content-script ack before the next is sent.
+// Resolves true when every chunk was acked, false on first failure.
+function sendStoryPayloadInChunks(tabId, storyId, payloadJson, authToken) {
+
+    const chunks = splitPayload(payloadJson)
+
+    let promiseChain = Promise.resolve(true)
+
+    chunks.forEach((chunk, chunkIndex) => {
+
+        promiseChain = promiseChain.then((allAcked) => {
+            if (!allAcked) {
+                return false
+            }
+
+            return new Promise((resolve) => {
+                chrome.tabs.sendMessage(tabId, {
+                    type: 'Background-uploadStoryChunk',
+                    storyId: storyId,
+                    authToken: authToken,
+                    chunkIndex: chunkIndex,
+                    totalChunks: chunks.length,
+                    chunk: chunk,
+                }, {}, function (response) {
+
+                    let err = chrome.runtime.lastError
+                    if (err) {
+                        console.warn('sendStoryPayloadInChunks:', err.message)
+                        resolve(false)
+                        return
+                    }
+
+                    if (!response || !response.ok) {
+                        console.warn('sendStoryPayloadInChunks: chunk not acked', chunkIndex)
+                        resolve(false)
+                        return
+                    }
+
+                    resolve(true)
+                })
+            })
+        })
+    })
+
+    return promiseChain
+}
+
+function uploadStoryFromBackground(payload, authToken) {
+    return fetch(`${ENV.STORIES_API}/stories`, {
+        method: 'POST',
+        headers: {
+            'Authorization': `Bearer ${authToken}`,
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
+        },
+        body: JSON.stringify(payload)
+    }).then(res => {
+        if (!res.ok) {
+            throw new Error(`stories upload failed: ${res.status}`)
+        }
+        return res.json()
+    })
+}
 
 domDelta.restoreSession().catch((err) => {
     console.error('domDelta restoreSession failed', err)
@@ -69,6 +135,14 @@ var flixVarsGlobal = {
 
 var flixVars = {...flixVarsGlobal}
 
+// MV3: service worker may restart mid-recording; re-register listeners and screenshot loop.
+chrome.storage.local.get(null).then((storage) => {
+    if (storage.recording === true && storage.type === 'FlixDemo' && !storage.stopInProgress) {
+        flixVars = {...flixVarsGlobal, ...storage}
+        flix.resumeRecordingAfterSwRestart(flixVars)
+    }
+})
+
 /** Prefer message payload; otherwise use auth persisted in chrome.storage.local (login / popup sync). */
 function resolveAuthDataForRecording(msgObj, callback) {
     if (msgObj && msgObj.authData && msgObj.authData.token) {
@@ -101,8 +175,15 @@ chrome.runtime.onInstalled.addListener(function (event) {
 function clearRecordingFlag(flixVarsRef) {
     if (flixVarsRef) {
         flixVarsRef.recording = false
+        flixVarsRef.stopInProgress = false
+        flixVarsRef.IsAttached = false
     }
-    return chrome.storage.local.set({ recording: false })
+    flix.clearRecordingBadge()
+    return chrome.storage.local.set({
+        recording: false,
+        stopInProgress: false,
+        IsAttached: false,
+    })
 }
 
 // Helper tab closed mid-record → hard clear so new tabs do not resume listeners
@@ -149,11 +230,12 @@ chrome.runtime.onMessage.addListener(function (msgObj, sendCommander, sendComman
     if (msgObj.type === 'flixCheckContentScript') {
 
 
-        chrome.tabs.query({active: true, lastFocusedWindow: true}, function (tabs) {
-            const tab = tabs[0]
+        chrome.windows.getLastFocused({ populate: true, windowTypes: ['normal'] }, function (win) {
+            const tab = win && win.tabs && win.tabs.find((t) => t.active)
 
             if (!tab) {
-                console.log('Tab not found')
+                console.log('[LD:bg] flixCheckContentScript: no normal-window tab')
+                sendCommandResp({ status: false })
                 return
             }
             // console.log('tab')
@@ -196,17 +278,22 @@ chrome.runtime.onMessage.addListener(function (msgObj, sendCommander, sendComman
 
     if (msgObj.type === 'flixCheckRecording') {
 
-
-        // console.log('BACKGROUND - flix_checkRecording')
+        console.log('[LD:bg] flixCheckRecording: reading storage')
 
         chrome.storage.local.get(null, function (checkRecordingStorage) {
 
-            // console.log('got storage for checkRecording')
-            // console.log(checkRecordingStorage)
+            console.log('[LD:bg] flixCheckRecording: storage snapshot', {
+                IsAttached: checkRecordingStorage.IsAttached,
+                recording: checkRecordingStorage.recording,
+                stopInProgress: checkRecordingStorage.stopInProgress,
+                type: checkRecordingStorage.type,
+                helperTabId: checkRecordingStorage.helperTabId,
+            })
 
             sendCommandResp({
                 IsAttached: checkRecordingStorage.IsAttached,
                 recording: checkRecordingStorage.recording === true,
+                stopInProgress: checkRecordingStorage.stopInProgress === true,
             })
         })
 
@@ -441,8 +528,13 @@ chrome.runtime.onMessage.addListener(function (msgObj, sendCommander, sendComman
 
     if (msgObj.type === 'flix_stopRecording' || msgObj.type === 'stopRecording') {
 
-        console.log('flix_stopRecording')
-        console.log(flixVars)
+        console.log('[LD:bg] flix_stopRecording: message received', {
+            type: msgObj.type,
+            hasDemoData: !!msgObj.demoData,
+            hasAuth: !!(msgObj.authData && msgObj.authData.token),
+            flixVarsRecording: flixVars.recording,
+            flixVarsType: flixVars.type,
+        })
 
         flix.flix_stopRecording(flixVars, flixVarsGlobal, sendCommandResp)
     }
@@ -499,13 +591,17 @@ chrome.runtime.onMessage.addListener(function (msgObj, sendCommander, sendComman
     }
 
     if (msgObj.type === 'domDelta_checkRecording') {
+        console.log('[LD:bg] domDelta_checkRecording: restoreSession start')
         // SW may wake with empty in-memory session; restore before answering.
         domDelta.restoreSession()
             .then(() => {
+                console.log('[LD:bg] domDelta_checkRecording: restoreSession ok', {
+                    isRecording: domDelta.isRecording(),
+                })
                 sendCommandResp({ IsAttached: !!domDelta.isRecording() })
             })
             .catch((err) => {
-                console.error('domDelta_checkRecording restore failed', err)
+                console.error('[LD:bg] domDelta_checkRecording: restoreSession failed', err)
                 sendCommandResp({ IsAttached: !!domDelta.isRecording() })
             })
     }
@@ -516,44 +612,21 @@ chrome.runtime.onMessage.addListener(function (msgObj, sendCommander, sendComman
 
         case 'flix_getTabInfo':
 
-            chrome.tabs.query({active: true, lastFocusedWindow: true}, function (tabs) {
-                const tab = tabs[0]
+            // Popup is lastFocusedWindow; it has no tabs. Use the last focused
+            // normal browser window instead.
+            chrome.windows.getLastFocused({ populate: true, windowTypes: ['normal'] }, (win) => {
+                const err = chrome.runtime.lastError
+                const tab = win && win.tabs && win.tabs.find((t) => t.active)
 
-                let err = chrome.runtime.lastError
                 if (err || !tab) {
-                    if (err) {
-                        console.log(err.message)
-                    }
+                    console.log('[LD:bg] flix_getTabInfo: no normal-window tab', err && err.message)
+                    sendCommandResp({ tabInfo: null, error: err ? err.message : 'no active tab' })
                     return
                 }
 
                 flixVars.demoTitle = tab.title
-
-                let target = {
-                    tabId: tab.id
-                }
-                //
-                // return chrome.scripting.executeScript({
-                //     target: target, func: () => {
-                //
-                //       return {
-                //         innerWidth: window.innerWidth,
-                //         innerHeight: window.innerHeight
-                //       }
-                //     }
-                //   })
-                //   .then((measures) => {
-
-                sendCommandResp(
-                    {
-                        tabInfo: tab
-                        // ...measures
-
-                    }
-                )
+                sendCommandResp({ tabInfo: tab })
             })
-
-            // })
 
             break
 
@@ -609,10 +682,20 @@ chrome.runtime.onMessage.addListener(function (msgObj, sendCommander, sendComman
                     }
 
                     flixVars.IsAttached = true
+                    flixVars.stopInProgress = false
                     flixVars.authData = authData
                     flixVars.demoData = msgObj.demoData
                     flixVars.recording = true
                     flixVars.type = 'FlixDemo'
+
+                    chrome.storage.local.set({
+                        recording: true,
+                        IsAttached: true,
+                        stopInProgress: false,
+                        type: 'FlixDemo',
+                        demoData: flixVars.demoData,
+                        authData: flixVars.authData,
+                    })
 
                     flix.startRecordingDemoFromBackground(flixVars)
                         .then((helperTab) => {
@@ -701,75 +784,97 @@ chrome.runtime.onMessage.addListener(function (msgObj, sendCommander, sendComman
 
         case 'helper_stopRecording':
 
-            console.log('helper_stopRecording response')
+            console.log('[LD:bg] helper_stopRecording: start', {
+                videoBlobsUrl: msgObj.videoBlobsUrl ? '(set)' : '(missing)',
+                videoStartMs: msgObj.videoStartMs,
+                videoEndMs: msgObj.videoEndMs,
+                helperTabId: flixVars.helperTabId,
+            })
 
             // Hard-clear before async upload/open — resume must not false-positive
+            // MV3: the service worker may have restarted; in-memory flixVars loses demoData/authData.
+            // Recording start persists those via chrome.storage.local — merge before upload.
             clearRecordingFlag(flixVars)
-
-            flixVars.videoBlobsUrl = msgObj.videoBlobsUrl
-            flixVars.videoStartMs = msgObj.videoStartMs
-            flixVars.videoEndMs = msgObj.videoEndMs
-
-            flix.getBlobFromUrl(flixVars.videoBlobsUrl)
-                .then((videoBlobs) => {
-
-                    return new Promise((resolve, reject) => {
-                        chrome.tabs.sendMessage(sendCommander.tab.id, {
-                            name: 'CLOSE_TAB',
-                        }, {}, function (response) {
-                            resolve(videoBlobs)
-                        })
+                .then(() => chrome.storage.local.get(null))
+                .then((storage) => {
+                    console.log('[LD:bg] helper_stopRecording: storage merged', {
+                        hasDemoData: !!storage.demoData,
+                        hasAuth: !!(storage.authData && storage.authData.token),
+                        type: storage.type,
+                        capturedEvents: Array.isArray(storage.capturedEvents) ? storage.capturedEvents.length : 0,
                     })
+                    flixVars = {...flixVarsGlobal, ...storage, recording: false}
+                    flixVars.videoBlobsUrl = msgObj.videoBlobsUrl
+                    flixVars.videoStartMs = msgObj.videoStartMs
+                    flixVars.videoEndMs = msgObj.videoEndMs
+
+                    console.log('[LD:bg] helper_stopRecording: fetching blob from helper URL')
+                    return flix.getBlobFromUrl(flixVars.videoBlobsUrl)
+                })
+                .then((videoBlobs) => {
+                    console.log('[LD:bg] helper_stopRecording: blob fetched', {
+                        size: videoBlobs && videoBlobs.size,
+                        type: videoBlobs && videoBlobs.type,
+                    })
+                    // Helper tab is an extension page (no content script) — tabs.sendMessage
+                    // fails with "Receiving end does not exist". Remove by id instead.
+                    if (flixVars.helperTabId) {
+                        chrome.tabs.remove(flixVars.helperTabId, () => void chrome.runtime.lastError)
+                    }
+                    return videoBlobs
                 })
                 .then((videoBlobs) => {
 
                     flixVars.videoBlobs = videoBlobs
 
+                    console.log('[LD:bg] helper_stopRecording: afterRecordingVideo start')
                     return flix.afterRecordingVideo(flixVars)
 
                 })
-                .then(({payloadDataUrl, newStoryId}) => {
+                .then(({payload, payloadJson, newStoryId}) => {
 
-                    // Helper tab may have already closed itself after CLOSE_TAB cleanup.
-                    chrome.tabs.remove(flixVars.helperTabId, () => {
-                        void chrome.runtime.lastError
+                    console.log('[LD:bg] helper_stopRecording: afterRecordingVideo done', {
+                        newStoryId,
+                        payloadJsonLength: payloadJson && payloadJson.length,
+                        screenshotCount: payload && payload.screenshots ? Object.keys(payload.screenshots).length : 0,
                     })
-
-                    console.log(`newStoryDemo response - id - ${newStoryId}`)
 
                     chrome.runtime.sendMessage({
                         name: 'popup_recordingCompleted',
                         storyDemo: {_id: newStoryId}
-                    })
+                    }, () => void chrome.runtime.lastError)
 
                     let authToken = flixVars && flixVars.authData && flixVars.authData.token
-                    if (payloadDataUrl && newStoryId) {
+                    if (payloadJson && newStoryId) {
                         chrome.tabs.create({'url': `${ENV.SERVER_URL}/livedemos/${newStoryId}`}, function (createdTab) {
 
 
                             chrome.tabs.onUpdated.addListener(function listener(updatedTabId, changeInfo) {
                                 if (updatedTabId === createdTab.id && changeInfo.status === "complete") {
-                                    console.log(`Tab ${createdTab.id} has fully loaded!`);
+                                    console.log('[LD:bg] helper_stopRecording: preview tab loaded', { tabId: createdTab.id })
 
-                                    chrome.tabs.sendMessage(createdTab.id, {
-                                        type: 'Background-uploadStory',
-                                        storyId: newStoryId,
-                                        payloadDataUrl: payloadDataUrl,
-                                        authToken: authToken
-                                    })
+                                    sendStoryPayloadInChunks(createdTab.id, newStoryId, payloadJson, authToken)
+                                        .then((allAcked) => {
+                                            console.log('[LD:bg] helper_stopRecording: chunk upload done', { allAcked })
+                                            if (!allAcked) {
+                                                console.warn('[LD:bg] helper_stopRecording: chunk relay failed, SW fallback')
+                                                return uploadStoryFromBackground(payload, authToken)
+                                            }
+                                        })
+                                        .catch((err) => console.error('story upload failed', err))
+                                        .finally(() => {
+                                            flix.resetVars(flixVars)
+                                                .then(() => {
+
+                                                    chrome.storage.local.get(null)
+                                                        .then((storageVars) => {
+                                                            flixVars = {...flixVarsGlobal, ...storageVars}
+                                                        })
 
 
-                                    flix.resetVars(flixVars)
-                                        .then(() => {
-
-                                            chrome.storage.local.get(null)
-                                                .then((storageVars) => {
-                                                    flixVars = {...flixVarsGlobal, ...storageVars}
+                                                    sendCommandResp({msg: 'Stopped recording'})
+                                                    // chrome.runtime.reload()
                                                 })
-
-
-                                            sendCommandResp({msg: 'Stopped recording'})
-                                            // chrome.runtime.reload()
                                         })
 
 
@@ -789,11 +894,14 @@ chrome.runtime.onMessage.addListener(function (msgObj, sendCommander, sendComman
                     // sendCommandResp({ msg: 'Stopped recording', liveDemoUrl: res.liveDemoUrl })
                 })
                 .catch(function (error) {
-                    console.log('Request failed', error)
+                    console.error('[LD:bg] helper_stopRecording: failed', error)
                     clearRecordingFlag(flixVars)
-
-                    // chrome.runtime.reload()
-                    throw error
+                    chrome.runtime.sendMessage({
+                        name: 'popup_recordingCompleted',
+                        storyDemo: { _id: '' },
+                        error: error && error.message ? error.message : String(error)
+                    }, () => void chrome.runtime.lastError)
+                    sendCommandResp({ success: false, error: String(error && error.message || error) })
 
                     // cleanStorage()
                 })
@@ -1012,7 +1120,10 @@ chrome.runtime.onMessage.addListener(function (msgObj, sendCommander, sendComman
                 })
             return true
         default:
-            return false
+            // Keep the channel open: handlers above this switch (flixCheckRecording,
+            // flix_stopRecording, domDelta_*) reply asynchronously. return false
+            // drops those replies — popup then thinks nothing is recording.
+            return true
     }
 
 })

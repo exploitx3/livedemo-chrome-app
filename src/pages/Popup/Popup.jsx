@@ -49,8 +49,10 @@ const Popup = () => {
   const navigate = useNavigate()
 
   useEffect(() => {
-    console.log('checkContentScript called')
+    console.log('[LD:popup] mount: checkContentScript')
     checkContentScript()
+        .then((response) => console.log('[LD:popup] mount: checkContentScript done', response))
+        .catch((err) => console.error('[LD:popup] mount: checkContentScript failed', err))
   }, [])
 
   // Auth is written by the background script into chrome.storage.local.
