@@ -14,9 +14,9 @@ import axios from '../../../../helpers/axiosInstance'
 import * as ENV from '../../../../config.json'
 
 const CAPTURE_TYPE = {
-  // page: 'page',
   screenshot: 'screenshot',
-  video: 'video'
+  video: 'video',
+  page: 'page',
 }
 const StoryPage = function (props) {
   let navigate = useNavigate()
@@ -37,7 +37,21 @@ const StoryPage = function (props) {
   const [isSaving, setIsSaving] = useState(false)
   const [isRecording, setIsRecording] = useRecoilState(state.isRecordingState)
 
-  const [selectedCaptureType, setSelectedCaptureType] = useState(CAPTURE_TYPE.page)
+  const [isCaptureMenuOpen, setIsCaptureMenuOpen] = useState(false)
+  const [animatedCursor, setAnimatedCursor] = useState(true)
+
+  // Keep latest values for the chrome.runtime message listener (mount-once).
+  const recordingCompletedRef = React.useRef(() => {})
+  recordingCompletedRef.current = () => {
+    setIsRecording(false)
+    setIsSaving(false)
+    chrome.action.setIcon({ path: 'logo-128.png' })
+
+    if (currentSelectedWorkspace && currentSelectedWorkspace._id && storyId && authData && authData.token) {
+      getStory(currentSelectedWorkspace._id, storyId, authData.token)
+        .catch(() => {})
+    }
+  }
 
   function getStory(workspaceId, storyId, authToken) {
 
@@ -53,48 +67,117 @@ const StoryPage = function (props) {
         setStory(res.data)
         setIsStoryLoading(false)
 
+        if (res.data && res.data._id && authData && authData.token) {
+          chrome.storage.local.set({
+            pageCaptureContext: {
+              workspaceId: res.data.workspaceId || currentSelectedWorkspace._id,
+              storyId: res.data._id,
+              authToken: authData.token,
+            }
+          })
+        }
+
         return res.data
+      })
+      .catch((err) => {
+        console.log(err)
+        setIsStoryLoading(false)
+        throw err
       })
   }
 
   useEffect(() => {
-
+    if (!currentSelectedWorkspace || !currentSelectedWorkspace._id || !authData || !authData.token) {
+      setIsStoryLoading(false)
+      return
+    }
     getStory(currentSelectedWorkspace._id, storyId, authData.token)
-
+      .catch(() => {})
   }, [])
 
   useEffect(() => {
-    if (isRecording) {
-
-      stopRecording()
-    } else {
-
-
-      chrome.action.setIcon({ path: 'logo-128.png' })
+    function onRuntimeMessage(request, sender, sendResponse) {
+      // Only handle completion events. Calling sendResponse for every message
+      // steals authenticate/check_authenticate replies from the background while
+      // this popup is open (content script → runtime.sendMessage).
+      if (
+        request.name === 'popup_video_recordingCompleted' ||
+        request.name === 'popup_recordingCompleted'
+      ) {
+        recordingCompletedRef.current()
+        sendResponse({})
+      }
     }
+
+    chrome.runtime.onMessage.addListener(onRuntimeMessage)
+    return () => chrome.runtime.onMessage.removeListener(onRuntimeMessage)
+  }, [])
+
+  useEffect(() => {
+    let fallbackTimer = null
 
     checkRecording()
-      .then((isRecordingBg) => {
+      .then(({ isActive, stopInProgress }) => {
+        setIsRecording(isActive)
 
-        console.log('isRecording - ')
-        console.log(isRecordingBg)
-
-        if (isRecordingBg !== null) {
-
-          setIsRecording(isRecordingBg)
+        if (stopInProgress && !isActive) {
+          // Upload already in flight — keep spinner until completion message.
+          setIsSaving(true)
+          fallbackTimer = setTimeout(() => {
+            setIsSaving(false)
+            setIsRecording(false)
+          }, 60000)
+          return
         }
 
-        // If it is recording immediately stop recording and save livedemo
-        setIsRecording(isRecordingBg)
-
-        if(!isRecordingBg && !isRecording) {
-          setIsSaving(false)
+        if (isActive) {
+          // Recorded tab may have closed/crashed — verify before stopping.
+          return verifyRecordedTabAlive()
+            .then((alive) => {
+              if (!alive) {
+                setIsRecording(false)
+                setIsSaving(false)
+                chrome.action.setIcon({ path: 'logo-128.png' })
+                return null
+              }
+              return stopRecording()
+            })
         }
+
+        setIsSaving(false)
+        chrome.action.setIcon({ path: 'logo-128.png' })
       })
-    return () => {
+      .catch((err) => {
+        console.log(err)
+        setIsSaving(false)
+      })
 
+    return () => {
+      if (fallbackTimer) {
+        clearTimeout(fallbackTimer)
+      }
     }
   }, [])
+
+  function verifyRecordedTabAlive() {
+    return new Promise((resolve) => {
+      chrome.storage.local.get(['demoData', 'tabId'], (storage) => {
+        const tabId = (storage && storage.tabId)
+          || (storage && storage.demoData && storage.demoData.tabInfo && (storage.demoData.tabInfo.id || storage.demoData.tabInfo.tabId))
+        if (!tabId) {
+          resolve(false)
+          return
+        }
+        chrome.tabs.get(tabId, (tab) => {
+          if (chrome.runtime.lastError || !tab) {
+            resolve(false)
+            return
+          }
+          resolve(true)
+        })
+      })
+    })
+  }
 
 
   function stopRecording() {
@@ -111,29 +194,31 @@ const StoryPage = function (props) {
         type: 'flix_stopRecording',
         demoData: {
           workspaceId: currentSelectedWorkspace._id,
+          storyId: storyId,
         },
-        // authData: authData,
+        authData: authData,
       }, (res) => {
-
-        // let newStoryDemo = res.storyDemo
-        // setIsSaving(false)
-        // resolve(res)
-
-        setTimeout(() => {
-
-
+        const err = chrome.runtime.lastError
+        if (err) {
+          console.log(err.message)
           setIsSaving(false)
-
           resolve(res)
+          return
+        }
 
-        }, 15000)
+        // Keep spinner while the video uploads. popup_video_recordingCompleted
+        // clears it; this timeout is only a fallback if that message is missed.
+        setTimeout(() => {
+          setIsSaving(false)
+          resolve(res)
+        }, 60000)
 
       })
 
     })
       .then(() => {
-
-        getStory(currentSelectedWorkspace._id, storyId, authData.token)
+        return getStory(currentSelectedWorkspace._id, storyId, authData.token)
+          .catch(() => {})
       })
 
 
@@ -154,7 +239,13 @@ const StoryPage = function (props) {
         }
 
         console.log('flixCheckRecording ' + JSON.stringify(response))
-        resolve(response && response.IsAttached)
+        const isActive = !!(response && (response.recording || response.IsAttached))
+        const stopInProgress = !!(response && response.stopInProgress)
+        resolve({
+          isActive,
+          stopInProgress,
+          IsAttached: !!(response && response.IsAttached),
+        })
       })
     })
 
@@ -163,24 +254,16 @@ const StoryPage = function (props) {
   async function capture(workspaceId, storyId, token) {
     setIsNameChosen(true)
 
-
     chrome.tabs.query({ active: true, currentWindow: true }, function (tabs) {
-
       chrome.tabs.sendMessage(tabs[0].id, {
-        type: 'getStarted',
+        type: 'takePage',
         workspaceId: workspaceId,
         storyId: storyId,
         authToken: token,
       }, function (response) {
-
-
-        console.log('capture message sent')
+        console.log('takePage message sent')
       })
-
-
     })
-
-
   }
 
   /*
@@ -263,6 +346,7 @@ const StoryPage = function (props) {
           workspaceId: currentSelectedWorkspace._id,
           storyId: story._id,
           authToken: authData.token,
+          animatedCursor,
         }, function (response) {
 
           window.close()
@@ -291,39 +375,48 @@ const StoryPage = function (props) {
                   <C.OpenButton__Text>{story.name}</C.OpenButton__Text>
                   <C.OpenButton__Icon type={'select'} rotate={90}/>
                 </C.OpenButton>
-                {/* <C.GetStartedButton__Wrapper>
-                  <C.GetStartedButton__CaptureList>
-                    {Object.keys(CAPTURE_TYPE).map((captureType) => {
-                      let isSelected = false
-                      if(captureType === selectedCaptureType) {
-                          isSelected = true
-                      }
-
-                      return (
-                        <C.GetStartedButton__CaptureListItem
-                          key={captureType}
-                          isSelected={isSelected}
-                          onClick={() => {
-
-                            setSelectedCaptureType(captureType)
-                          }}
-                        >
-                          {getCaptureImage(captureType)}
-                        </C.GetStartedButton__CaptureListItem>
-                      )
-                    })}
-                  </C.GetStartedButton__CaptureList>
-                  <C.GetStartedButton
-                    onClick={() => {
-                      getCaptureOnClick(selectedCaptureType, story, authData)
-                    }}>
-                    Capture {selectedCaptureType}
-                  </C.GetStartedButton>
-                </C.GetStartedButton__Wrapper> */}
-
-
+                <C.CaptureButton
+                  onClick={() => setIsCaptureMenuOpen((open) => !open)}
+                  className={'CaptureButton'}>
+                  <C.CaptureButton__Text>Capture</C.CaptureButton__Text>
+                  <C.CaptureButton__Icon type={'caret-down'}/>
+                </C.CaptureButton>
               </C.TopSection>
-              <ScreensList screens={story.screens}/>
+              {isCaptureMenuOpen ? (
+                <C.CaptureOptions>
+                  {Object.keys(CAPTURE_TYPE).map((captureType) => (
+                    <React.Fragment key={captureType}>
+                      <C.CaptureOptionButton
+                        onClick={() => getCaptureOnClick(captureType, story, authData)}
+                      >
+                        <C.CaptureOptionButton__Icon>
+                          {getCaptureImage(captureType)}
+                        </C.CaptureOptionButton__Icon>
+                        <C.CaptureOptionButton__Text>
+                          Capture {captureType}
+                        </C.CaptureOptionButton__Text>
+                      </C.CaptureOptionButton>
+                      {captureType === CAPTURE_TYPE.video ? (
+                        <C.AnimatedCursorOption
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          <C.AnimatedCursorCheckbox
+                            type="checkbox"
+                            id="animated-cursor-checkbox"
+                            checked={animatedCursor}
+                            onChange={(e) => setAnimatedCursor(e.target.checked)}
+                          />
+                          <C.AnimatedCursorLabel htmlFor="animated-cursor-checkbox">
+                            Animated cursor
+                          </C.AnimatedCursorLabel>
+                        </C.AnimatedCursorOption>
+                      ) : null}
+                    </React.Fragment>
+                  ))}
+                </C.CaptureOptions>
+              ) : (
+                <ScreensList screens={story.screens}/>
+              )}
             </C.StoryContainer>
           )}
 
@@ -460,9 +553,12 @@ const C = {
      display: flex;
      justify-content: space-between;
      align-items: center;
+     gap: 8px;
      padding: 5px 0px;
      border-bottom: 1px solid rgba(0,0,0,.06);
-    
+     width: 100%;
+     box-sizing: border-box;
+     min-width: 0;
   `,
   OpenButton: styled.span`
     color: ${Colors.primaryText};
@@ -472,19 +568,17 @@ const C = {
     display: flex;
     justify-content: start;
     align-items: center;
-    gap: 15px;
-    width: fit-content;
+    gap: 8px;
+    min-width: 0;
+    flex: 1 1 0;
+    overflow: hidden;
     
     height: 50px;
     box-sizing: border-box;
-    border-bottom: 1px solid white;
-    border-top: 1px solid white;
-    border-left: 1px solid white;
-    border-right: 1px solid white;
+    border: 1px solid white;
     
     border-radius: 4px;
     padding: 10px;
-    
 
     
     &&:hover {
@@ -495,14 +589,108 @@ const C = {
   `,
   OpenButton__Text: styled.p`
     margin: 0px;
-    
-    max-width: 235px;
+    min-width: 0;
+    flex: 1 1 0;
     white-space: nowrap;
     text-overflow: ellipsis;
-    overflow-x: clip;
+    overflow: hidden;
   `,
   OpenButton__Icon: styled(Icon)`
+    flex-shrink: 0;
+  `,
+  CaptureButton: styled.span`
+    color: ${Colors.primaryText};
+    font-size: 1.3em;
+    text-transform: capitalize;
+    transition: all 0.5s;
+    display: flex;
+    justify-content: start;
+    align-items: center;
+    gap: 6px;
+    flex: 0 0 auto;
 
+    height: 50px;
+    box-sizing: border-box;
+    border: 1px solid white;
+    border-radius: 4px;
+    padding: 10px;
+
+    &&:hover {
+      cursor: pointer;
+      border: 1px solid ${Colors.primaryColor};
+    }
+  `,
+  CaptureButton__Text: styled.p`
+    margin: 0px;
+    white-space: nowrap;
+  `,
+  CaptureButton__Icon: styled(Icon)`
+    flex-shrink: 0;
+  `,
+  CaptureOptions: styled.div`
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 10px 0;
+    width: 100%;
+  `,
+  CaptureOptionButton: styled.button`
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    height: 40px;
+    padding: 0 12px;
+    border: 1px solid rgba(0,0,0,.06);
+    border-radius: 4px;
+    background: white;
+    color: ${Colors.primaryText};
+    font-size: 1em;
+    text-transform: capitalize;
+    cursor: pointer;
+    transition: all 0.2s;
+
+    &&:hover {
+      border: 1px solid ${Colors.primaryColor};
+      color: ${Colors.primaryColor};
+    }
+  `,
+  CaptureOptionButton__Icon: styled.span`
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 20px;
+    height: 20px;
+
+    && svg {
+      width: 18px;
+      height: 18px;
+      fill: ${Colors.primaryColor};
+    }
+  `,
+  CaptureOptionButton__Text: styled.span`
+    margin: 0;
+  `,
+  AnimatedCursorOption: styled.div`
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 0 12px 4px 42px;
+    margin-top: -4px;
+  `,
+  AnimatedCursorCheckbox: styled.input`
+    width: 14px;
+    height: 14px;
+    margin: 0;
+    accent-color: ${Colors.primaryColor};
+    cursor: pointer;
+  `,
+  AnimatedCursorLabel: styled.label`
+    margin: 0;
+    font-size: 0.85em;
+    color: ${Colors.primaryText};
+    cursor: pointer;
+    user-select: none;
   `,
   NewDemo: styled.div`
     background: white;

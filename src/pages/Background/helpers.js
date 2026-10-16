@@ -110,3 +110,48 @@ export function takeScreenshotAndSend(storyId, workspaceId, authToken) {
   })
 
 }
+
+export function takePageAndSend({ storyId, workspaceId, authToken, events, width, height, name }) {
+  chrome.action.setIcon({ path: 'logo-recording-128.png' })
+
+  return new Promise((resolve, reject) => {
+    chrome.tabs.captureVisibleTab(undefined, { format: 'png' }, (image) => {
+      if (chrome.runtime.lastError) {
+        chrome.action.setIcon({ path: 'logo-128.png' })
+        reject(new Error(chrome.runtime.lastError.message))
+        return
+      }
+
+      const body = {
+        storyId,
+        events,
+        imageData: image || '',
+        width: width || 0,
+        height: height || 0,
+        name: (name && String(name).trim()) || 'Base',
+      }
+
+      return fetch(`${ENV.STORIES_API}/workspaces/${workspaceId}/library/uploadPage`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${authToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(body),
+      })
+        .then((res) => {
+          chrome.action.setIcon({ path: 'logo-128.png' })
+          if (!res.ok) {
+            return res.text().then((t) => {
+              reject(new Error(`uploadPage ${res.status}: ${t}`))
+            })
+          }
+          resolve()
+        })
+        .catch((err) => {
+          chrome.action.setIcon({ path: 'logo-128.png' })
+          reject(err)
+        })
+    })
+  })
+}

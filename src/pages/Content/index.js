@@ -81,6 +81,28 @@ if (!isInFrameCheck) {
             // })
         }
 
+        if (msgObj.type === 'takePage') {
+            injectScript('takePage.bundle.js')
+
+            workspaceId = msgObj.workspaceId
+            storyId = msgObj.storyId
+            authToken = msgObj.authToken
+
+            window.config.workspaceId = workspaceId
+            window.config.storyId = storyId
+            window.config.authToken = authToken
+
+            chrome.storage.local.set({
+                pageCaptureContext: {
+                    workspaceId,
+                    storyId,
+                    authToken,
+                }
+            })
+
+            sendResponse({ ok: true })
+        }
+
 
         if (msgObj.type === 'takeVideo') {
             injectScript('takeVideo.bundle.js')
@@ -92,6 +114,7 @@ if (!isInFrameCheck) {
             window.config.workspaceId = workspaceId
             window.config.storyId = storyId
             window.config.authToken = authToken
+            window.config.animatedCursor = msgObj.animatedCursor !== false
             sendResponse({ ok: true })
 
         }
@@ -120,17 +143,7 @@ if (!isInFrameCheck) {
             sendResponse({ ok: true })
         }
 
-        if (msgObj.type === 'Background-captureStarted') {
-            window.postMessage({
-                type: 'CaptureComponent-captureStarted',
-            })
-            //
-            // window.postMessage({
-            //   type: 'capture',
-            //   workspaceId,
-            //   storyId
-            // })
-        }
+        // Legacy HTML CaptureComponent path removed — use takePage (rrweb Base).
 
 
         if (msgObj.type === 'Background-uploadStoryChunk') {

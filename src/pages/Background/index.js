@@ -7,7 +7,7 @@ const axios = require('axios')
 import * as flix from './flix'
 import * as domDelta from './domDelta'
 
-import {getImage, takeScreenshotAndSend} from './helpers'
+import {takeScreenshotAndSend, takePageAndSend} from './helpers'
 import {splitPayload} from '../../helpers/chunkedPayload'
 
 import * as Sentry from '@sentry/browser'
@@ -109,9 +109,6 @@ var isAttached = false
 var isRecording = false
 
 
-var contentBuffer = ''
-
-
 var flixVarsGlobal = {
     flix_IsAttached: false,
     flix_IsRecording: false,
@@ -192,6 +189,13 @@ chrome.tabs.onRemoved.addListener(function (tabId) {
         console.log('helper tab removed — clear recording flag')
         flixVars.helperTabId = 0
         clearRecordingFlag(flixVars)
+        return
+    }
+    // Recorded tab closed mid-record → clear so the popup does not spin on reopen.
+    if (flixVars.tabId && tabId === flixVars.tabId) {
+        console.log('recorded tab removed — clear recording flag')
+        flixVars.tabId = 0
+        clearRecordingFlag(flixVars)
     }
 })
 
@@ -206,17 +210,27 @@ chrome.commands.onCommand.addListener((command) => {
     console.log(`Command: ${JSON.stringify(command, null, 2)}`);
 
     if (command === 'capturePage') {
+        chrome.storage.local.get(['pageCaptureContext'], (result) => {
+            const ctx = result && result.pageCaptureContext
+            if (!ctx || !ctx.workspaceId || !ctx.storyId || !ctx.authToken) {
+                console.warn('capturePage: missing pageCaptureContext — open a story and capture once from the popup first')
+                return
+            }
 
-        chrome.tabs.query({active: true, lastFocusedWindow: true}, function (tabs) {
-            const tab = tabs[0]
+            chrome.tabs.query({active: true, lastFocusedWindow: true}, function (tabs) {
+                const tab = tabs[0]
+                if (!tab || !tab.id) {
+                    return
+                }
 
-            // console.log('tab')
-            // console.log(tab)
-
-            chrome.tabs.sendMessage(tab.id, {type: 'Background-captureStarted'}, function (msg) {
-                msg = msg || {}
-                // console.log('Sending capture event to content script')
-
+                chrome.tabs.sendMessage(tab.id, {
+                    type: 'takePage',
+                    workspaceId: ctx.workspaceId,
+                    storyId: ctx.storyId,
+                    authToken: ctx.authToken,
+                }, function () {
+                    void chrome.runtime.lastError
+                })
             })
         })
     }
@@ -371,104 +385,8 @@ chrome.runtime.onMessage.addListener(function (msgObj, sendCommander, sendComman
 
     }
 
-    if (msgObj.type === 'captureChunk') {
-
-        console.log(msgObj)
-        let {content} = msgObj
-
-        contentBuffer += content
-
-        sendCommandResp({
-            success: true
-        })
-
-    }
-
-    if (msgObj.type === 'captureChunksFinished') {
-
-
-        console.log(msgObj)
-        let {name, workspaceId, storyId, authToken} = msgObj
-
-
-        getImage()
-            .then((imageData) => {
-
-                return fetch(`${ENV.STORIES_API}/workspaces/${workspaceId}/stories/${storyId}/screens`, {
-                    method: 'POST',
-                    headers: {
-                        'Authorization': `Bearer ${authToken}`,
-                        'Content-Type': 'application/json'
-                    },
-                    body: JSON.stringify({
-                        name,
-                        content: contentBuffer,
-                        imageData: imageData
-                    })
-                })
-            })
-            .then((response) => {
-                contentBuffer = ''
-
-                sendCommandResp({
-                    success: true
-                })
-            })
-            .catch(error => {
-                contentBuffer = ''
-
-                sendCommandResp({
-                    success: false,
-                    error: error
-                })
-
-            })
-
-
-    }
-
-    if (msgObj.type === 'captureFullFinished') {
-
-
-        console.log(msgObj)
-        let {name, workspaceId, content, storyId, width, height, authToken} = msgObj
-
-
-        getImage()
-            .then((imageData) => {
-
-                return fetch(`${ENV.STORIES_API}/workspaces/${workspaceId}/stories/${storyId}/screens`, {
-                    method: 'POST',
-                    headers: {
-                        'Authorization': `Bearer ${authToken}`,
-                        'Content-Type': 'application/json'
-                    },
-                    body: JSON.stringify({
-                        name,
-                        content: content,
-                        imageData: imageData,
-                        width: width,
-                        height: height
-                    })
-                })
-            })
-            .then((response) => {
-
-                sendCommandResp({
-                    success: true
-                })
-            })
-            .catch(error => {
-
-                sendCommandResp({
-                    success: false,
-                    error: error
-                })
-
-            })
-
-
-    }
+    // Legacy HTML page capture (captureChunk / captureChunksFinished / captureFullFinished) removed.
+    // Screen_Page Base capture uses ld-page-request → takePageAndSend → /library/uploadPage.
 
     if (msgObj.type === 'ld-screenshot-request') {
 
@@ -478,6 +396,24 @@ chrome.runtime.onMessage.addListener(function (msgObj, sendCommander, sendComman
             .then(() => {
                 sendCommandResp({
                     success: true
+                })
+            })
+    }
+
+    if (msgObj.type === 'ld-page-request') {
+        let {storyId, workspaceId, authToken, events, width, height, name} = msgObj
+
+        takePageAndSend({ storyId, workspaceId, authToken, events, width, height, name })
+            .then(() => {
+                sendCommandResp({
+                    success: true
+                })
+            })
+            .catch((err) => {
+                console.error('ld-page-request failed', err)
+                sendCommandResp({
+                    success: false,
+                    error: err && err.message ? err.message : String(err)
                 })
             })
     }
@@ -496,32 +432,47 @@ chrome.runtime.onMessage.addListener(function (msgObj, sendCommander, sendComman
         }
         flixVars.demoData.storyId = storyId
         flixVars.demoData.workspaceId = workspaceId
-        if (authToken) {
-            flixVars.authData = {...(flixVars.authData || {}), token: authToken}
-        }
         flixVars.recording = true
         flixVars.type = 'Video'
 
         chrome.action.setIcon({path: 'logo-recording-128.png'})
 
-        flix.startRecordingVideoFromBackground(flixVars)
-            .then(({helperTab, window}) => {
+        // Keep full login authData in memory for uploads; never replace storage
+        // auth with a token-only stub (Popup requires authData.name).
+        chrome.storage.local.get(['authData'], (stored) => {
+            const fullAuth = stored && stored.authData
+            if (fullAuth && fullAuth.token) {
+                flixVars.authData = fullAuth
+            } else if (authToken) {
+                flixVars.authData = { ...(flixVars.authData || {}), token: authToken }
+            }
 
-                if (flixVars.tabId && helperTab.id) {
+            flix.startRecordingVideoFromBackground(flixVars)
+                .then(({helperTab, window}) => {
 
-                    console.log('flixVars saved')
-                    flixVars.helperTabId = helperTab.id
-                    flixVars.helperWindowId = window.id
+                    if (flixVars.tabId && helperTab.id) {
 
-                    flix.persistLightFlixVars(flixVars)
-                        .then(() => {
+                        console.log('flixVars saved')
+                        flixVars.helperTabId = helperTab.id
+                        flixVars.helperWindowId = window.id
 
-                            sendCommandResp('Started recording video')
-                        })
-                }
+                        // Persist tabId so stop can remove the cursor even after SW restart.
+                        flixVars.demoData.tabInfo = {
+                            ...(flixVars.demoData.tabInfo || {}),
+                            id: flixVars.tabId,
+                            tabId: flixVars.tabId,
+                        }
+
+                        flix.persistLightFlixVars(flixVars)
+                            .then(() => {
+
+                                sendCommandResp('Started recording video')
+                            })
+                    }
 
 
-            })
+                })
+        })
 
 
     }
@@ -535,6 +486,15 @@ chrome.runtime.onMessage.addListener(function (msgObj, sendCommander, sendComman
             flixVarsRecording: flixVars.recording,
             flixVarsType: flixVars.type,
         })
+
+        // Popup sends the story it is on; merge so stop can resolve the recorded tab
+        // even when in-memory demoData only has workspaceId (video path).
+        if (msgObj.demoData) {
+            flixVars.demoData = { ...(flixVars.demoData || {}), ...msgObj.demoData }
+        }
+        if (msgObj.authData && msgObj.authData.token) {
+            flixVars.authData = msgObj.authData
+        }
 
         flix.flix_stopRecording(flixVars, flixVarsGlobal, sendCommandResp)
     }

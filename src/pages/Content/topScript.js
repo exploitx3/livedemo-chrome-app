@@ -502,6 +502,21 @@ function setup() {
       })
     }
 
+    if (event.data.type === 'ld-page-request') {
+      chrome.runtime.sendMessage({
+        type: 'ld-page-request',
+        workspaceId: config.workspaceId,
+        authToken: config.authToken,
+        storyId: config.storyId,
+        events: event.data.events,
+        width: event.data.width,
+        height: event.data.height,
+        name: event.data.name,
+      }, function(res) {
+        console.log('ld-page-request response from background - ', res)
+      })
+    }
+
     if (event.data.type === 'ld-video-request') {
       // console.log('capture called')
 
@@ -518,7 +533,9 @@ function setup() {
     }
 
     if (event.data.type === 'ld-take-video-install-cursor') {
-      installRecordingTabCursor(flixVars)
+      if (config.animatedCursor !== false) {
+        installRecordingTabCursor(flixVars)
+      }
     }
 
     if (event.data.type === 'flix_startRecording') {

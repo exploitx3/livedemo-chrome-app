@@ -54,6 +54,9 @@ function persistLightFlixVars(flixVars) {
     NON_PERSISTED_FLIX_KEYS.forEach((key) => {
         delete light[key]
     })
+    // Never clobber the login session. Video start often only has { token },
+    // and Popup gates on authData.name — overwriting logs the user out.
+    delete light.authData
     return chrome.storage.local.set(light)
 }
 
@@ -1305,10 +1308,8 @@ async function startRecordingVideoFromBackground(flixVars) {
     //   })
 
     await new Promise((resolve) => {
+        // Do not write authData here — may be token-only and would wipe authData.name.
         const toStore = { demoData: flixVars.demoData, recording: true, type: 'Video' }
-        if (flixVars.authData) {
-            toStore.authData = flixVars.authData
-        }
         chrome.storage.local.set(toStore, resolve)
     })
 
@@ -1329,6 +1330,8 @@ function stopRecordingDemoFromBackground(flixVars, storage) {
     const recordedTabId = getRecordedTabId(flixVars)
         || storage?.demoData?.tabInfo?.id
         || storage?.demoData?.tabInfo?.tabId
+        || storage?.tabId
+        || flixVars.tabId
 
     console.log('[LD:bg:flix] stopRecordingDemoFromBackground', { recordedTabId, type: flixVars.type })
 
